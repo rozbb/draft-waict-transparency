@@ -12,6 +12,7 @@ We use the C2SP glossary for this document. This is an arbitrary choice but we n
 
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
+* The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
 * The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may have to store a lot of data, and be expected to have high uptime. **A Log Provider is identified by its domain.**
 * A **Log** is a tamper-evident service that stores data in an authenticated, append-only data structure with a succinct representative. For simplicity, we will assume this is a Merkle tree with the representative being the root. A Site MAY use more than one Log at a time. **A Log is identified by the triple of: Log Provider, Site being logged, and revision, a 64-bit unique identifier for disambiguation.**
 * An **Actor** is any party that interfaces with a Log. They may also produce signatures of the Log root. There are a few specific kinds of Actors. We give some broad definitions below, but note that Actors can really do whatever.
@@ -27,9 +28,12 @@ Finally, for this document, we will use **manifest hash** to refer to a 32-byte 
 sequenceDiagram
   actor U as User
   participant S as Site
+  participant E as Enrollment<br/>Server
   participant L as Log Provider
   participant W as Witness
-  S->>L: POST /append <br /> site_contents.zip <br /> (contains manifest)
+  S->>E: Enroll in transparency <br/> w/ $log_provider and $log_id
+  note over S: Later
+  S->>L: POST /append  site_contents.zip <br /> (contains manifest)
   note over L: Appends site_contents.zip to Log. <br/> Creates pre_checkpoint, containing: <br/> manifest hash, log id, epoch, provider sig
   L->>W: POST /add-checkpoint <br /> pre_checkpoint, <br/> Merkle consistency proof
   note over W:  Checks sig and proof. <br /> On success appends own <br/>signature to the checkpoint
@@ -44,11 +48,12 @@ sequenceDiagram
 
 We describe the shape of a web application manifest transparency solution here. The details are very important, and we discuss them at length later on. At a high level:
 
-1. A Site includes in its manifest some representation of all the assets it wishes to enforce the integrity of. It also defines some transparency metadata such as validity period of the manifest.
-1. The Site sends the manifest and transparency metadata (and possibly a package of all the files) to a Log Provider.
+1. A Site picks a Log Provider, creates a new Log, and enrolls in web transparency via the Enrollment Server.
+1. The Site includes in its manifest a hash of each of the assets it wishes to enforce the integrity of.
+1. The Site sends the manifest and transparency metadata (and possibly a package of all the files) to the Log Provider.
 1. The Log Provider records everything, appends to its Log, and gets the new root signed by a Witness.
-1. The Site includes in its TLS leaf certificate that it has transparency enabled and which Logs it’s in.
-1. When receiving a manifest from a transparency-enabled site, the User checks the transparency data, ensuring that the origin matches the Site’s, and verifying the Witness signature(s).
+1. User's periodically update their list of Sites with transparency enabled, either by polling the Enrollment Server's database or by browser updates.
+1. When receiving a manifest from a transparency-enabled site, the User checks the transparency data, ensuring that the origin matches the Site’s, and that the Witness signatures verify.
 1. If any checks fail, the User fails closed.
 
 (TODO: Include rough estimates for Log storage requirements (and witness if required))
@@ -94,32 +99,63 @@ We’ll briefly state some more design requirements for any solution we come up 
 1. **Ease of opt-in.** The goal of the web integrity effort is to provide integrity, transparency, and consistency guarantees to sites, from those with many million daily active users, to those with a few dozen daily active users. To this end, we aim to keep the barrier of entry for our constructions as low as possible. Some costs are inherent, e.g., interfacing with the transparency ecosystem and general hosting needs, but we aim to isolate these as much as they can be isolated, and eliminate them where possible.
 1. **Ease of opt-out.** It should be possible for a Site to create a new Log, switch Log Providers, or stop participating in transparency altogether. Further, it should be possible for this to happen even if all cryptographic material is lost, or the Site is seized. What we don’t want is a permanent lockout condition  for certain domains, as was permitted in the failed HTTP key pinning spec. This is a difficult needle to thread: any solution must be powerful enough to provide strong guarantees to a User, but optional enough that it can be disabled at any time.
 
-Finally, we permit our design to rely on the correct functioning of TLS. In particular, we may **assume that a Site is in control of its own TLS certificate.** This is an unexpectedly strong assumption, since recent [high-profile attacks](https://arstechnica.com/information-technology/2022/09/how-3-hours-of-inaction-from-amazon-cost-cryptocurrency-holders-235000/) occurred as a result of BGP hijacking, wherein the attacker issued a new TLS certificate on behalf of the website. For this document, we nonetheless assume that the Site has control over its own TLS certificate, since we must anchor our trust somewhere. At the very least, our proposal will detect and hopefully deter attacks that do not involve BGP hijacking. Further, we note that, with the adoption and rollout of [MPIC](https://open-mpic.org/) for domain control validation, we expect BGP hijacking to become significantly harder by mid-2025.
-
 ## Construction
 
 ### Signaling transparency to the User
 
-The Site must signal to the User that it should expect to receive integrity and transparency data. This is done within the TLS leaf certificate of the Site. Specifically, the certificate includes an [X.509 v3 certificate extension](https://www.ietf.org/rfc/rfc3280.html#section-4.1) that, deserialized, is a Transparency type, where
+To enable transparency, a Site must register with the Enrollment Server, giving it the Site's desired Log. Each User is responsible for maintaining a reasonably up-to-date copy of the list of enrolled Sites (this can be done, e.g., by browser bundling and/or periodic polling).
 
-```
-Log ::= SEQUENCE {
-    logProvider    OCTET STRING (SIZE(1..253)),
-    revision       OCTET STRING (SIZE(8))
+Specifically, the information that must be conveyed to a user is a mapping of Site origin to a list of Logs. The specific format of this is out of scope. Additional information MAY be included in the entries of the mapping, such as a list of authorized signers for manifests presented by the Site.
+
+#### Initiating enrollment
+
+To enroll, the Site must provide its desired Logs and prove that it is indeed the Site. To facilitate this , the Enrollment Server exposes a single POST endpoint, at `https://$enrollment_server/set-site-logs`. A request to this endpoint is of the following form:
+```javascript
+POST /set-site-logs
+Content-Type: application/json
+
+{
+    "version": 1,
+    "site": $site_origin,
+    "logs": [
+        {
+            "log_provider": $log_provider,
+            "revision": $revision
+        },
+        ...
+    ]
 }
-Transparency ::= SEQUENCE {
-    logs           SEQUENCE SIZE (1..10) OF Log
-}
+```
+where `$site_origin` is the origin of the enrolling Site, formatted as `$scheme://$domain:$port`, and each `$log_provider` is a domain of a Log Provider, with syntax conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and each `$revision` is an 8-byte bytestring, encoded in base64. The Enrollment Server interprets each entry in `logs` as the Log defined by `($log_provider, $site_origin, $revision)`. To unenroll from transparency, the Site simply leaves `logs` empty. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation.
+
+If the request is well-formed, the Enrollment Server responds with a _challenge_ string. This string MUST have at least 128 bits of entropy, MUST NOT contain any characters outside the base64url alphabet, and MUST NOT include the base64 padding character ("=").
+```
+HTTP/1.1 200 OK
+Content-Type: plain/text
+
+DrqKo-kHVw2FZURaLWayeyir5yiOaUVqZjboTmVbG1I
 ```
 
-For each entry of `logs`, the `logProvider` field is the domain of a Log Provider. This MUST be a valid domain per the syntax in [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1). The `revision` is an arbitrary 64-bit string. All the contents of the certificate extension is chosen by the requester of the certificate signing request, i.e., the Site owner.
+#### Completing enrollment
 
-The purpose of in-certificate signaling is twofold. First, it ensures that the act of disabling web application transparency will itself be transparent, i.e., recorded in a Certificate Transparency log.  Second, for the same reason, it makes evident any attempts by the Site to fork the view of their assets by using different Logs for different Users.
+(TODO: be more specific about response codes and content types. See eg the [ACME spec](https://www.rfc-editor.org/rfc/rfc8555.html#section-8.3))
+
+Upon receiving the challenge from the Enrollment Server, the Site copies it and exposes it at `$site_origin/.well-known/waict-enrollment-challenge`. The Enrollment Server polls this endpoint with `GET` requests until some timeout period. If it receives the same challenge string in response, the Enrollment Server updates its database to have the `$site_origin` map to the list of provided Logs.
+(TODO: This diverges from the ACME challenge-response protocol in two ways. First, the Enrollment Server checks ownership by checking a response value from the Site rather than checking that a specific path returned a 200. Does this matter if we don't care to support concurrent enrollments? Second, there's no public key cryptography here, because there are no account keys. Do we want account keys like ACME?)
+
+The Enrollment Server MAY impose additional rules on its enrollment process. For example, if a Site is unenrolling and has not signed up for email notifications, the Enrollment Server might impose a three-hour "cooldown" period before the unenrollment goes into effect. Such rules are left out of scope.
+
+A note on concurrency: in practice, a Site should not have a reason to enroll multiple times in short succession. If it does, though, the Enrollment Server may interleave events arbitrarily within its timeout window. That is, if a Site enrolls with request A, then enrolls with request B, then exposes the challenge for A, then exposes the challenge for B, the Enrollment Server may update its database to map the Site to the Logs in request A or request B, or none.
+
+#### Transparency of the Enrollment Server
+
+To achieve the goals of this specification, it is necessary that the act of disabling web application transparency itself be transparent, i.e., that the action is recorded in a log somewhere.  Further, it is necessary to that the act of forking the view of a Site's assets by using different Logs for different Users be transparent as well.
+
+To this end, the Enrollment Server MUST make its database transparent. We leave the specifics of this mechanism out of scope.
 
 ### Transparency metadata format
 
 When the Site serves its manifest, it will also serve a **checkpoint**—which contains the latest data about the Log—and the inclusion proof—which proves that the manifest hash is the last entry in the Log. The checkpoint has the following key-value structure, and the **inclusion proof** is an ordinary bytestring. (TODO: We don’t prescribe a format here. See [open problem](#checkpoint-encoding-is-undefined))
-
 ```
 // Checkpoint
 version => b"waict-v1"
@@ -199,7 +235,7 @@ If all checks succeed, it will sign the checkpoint.  (TODO: Again, no spec on en
 
 ### Log Provider endpoints
 
-A Log Provider MUST expose the following HTTP API. We let `$base` denote the domain of the Log Provider, as appears in the TLS leaf certificate extension and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
+A Log Provider MUST expose the following HTTP API. We let `$base` denote the domain of the Log Provider, as appears in the Enrollment Server mapping and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
 
 
 | Endpoint | Description |
@@ -222,7 +258,7 @@ We describe how both of these are achieved.
 
 #### Detecting change of Log
 
-Since the Site’s Log(s) info is encoded in an extension in the Site’s TLS leaf certificate, it suffices to scan all TLS certificates issued to the Site. A Monitor can do this by tailing a widely trusted set of Certificate Transparency logs. Since major web browsers now enforce CT, the Monitor can be reasonably confident that any changes will show up in one of the CT logs. Further, since CT logs have to obey a maximum merge delay (MMD) policy, this limits how much time it takes to detect an update in Log info.
+Since the Site’s Log(s) info is encoded in the Enrollment Server's database, and the database itself is made transparent, it suffices to scan the database log for entries pertaining to the Site.
 
 #### Detecting new entries in Log(s)
 
@@ -234,7 +270,7 @@ We discuss some failure modes and how the above construction proposes they be ha
 
 #### Log Provider failure
 
-If a Log Provider is down, a Site cannot make updates. Even worse, after the not_after time on the latest checkpoint, the Site will effectively go down even if there are no updates. When this happens, the Site can enroll itself in a new Log and issue itself a new TLS certificate with the new Log in the extension. Another alternative is to unenroll from transparency entirely, i.e., issue itself a new TLS certificate with no extension.
+If a Log Provider is down, a Site cannot make updates. Even worse, after the not_after time on the latest checkpoint, the Site will effectively go down even if there are no updates. When this happens, the Site can sign up with a new Log and re-enroll at the Enrollment Server with it. Another alternative is to unenroll from transparency entirely.
 
 #### Witness failure
 
@@ -263,9 +299,9 @@ Since the entire purpose of this is to get alerts if her site is ever hacked, Al
 
 #### Enabling transparency
 
-Finally, Alice is ready to flip the switch. In order for her users to start using transparency, she needs to issue a new TLS certificate that indicates that she’s using Loggy and has a specific revision number. She performs the build for production, deploys, and checks that transparency is validating in her dev tools. She then runs `certbot` with the `--transparency` flag. This will look for the transparency data in her site root and use the first Log it finds (Alice could specify these manually, and even include multiple Logs, but she has no need). It embeds the Log Provider and revision information in its Certificate Signing Request (CSR) and sends it to LetsEncrypt for signing. On success, it drops the certificate in the appropriate directory, and Alice is all done.
+Finally, Alice is ready to flip the switch. In order for her users to start using transparency, she needs to enroll with the Enrollment Server, indicating to it that she’s using Loggy and has a specific revision number. She performs the build for production, deploys, and checks that transparency is validating in her dev tools. She then runs `enrollify`, a `certbot`-like CLI. This will look for the transparency data in her site root and use the first Log it finds (Alice could specify these manually, and even include multiple Logs, but she has no need). It embeds the Log Provider and revision information in its POST request to the Enrollment Server, and updates the sites `/.well-known/waict-enrollment-challenge` endpoint accordingly. Once this protocol terminates, Alice is all done.
 
-Alice receives an URGENT email from her monitor, saying that transparency has been enabled. She opens prod and checks one last time that everything is validating, and then revokes her old non-transaparency-enabled TLS certificate. She breathes a sigh of relief. Finally, she can return to her passion of drop-shipping polyester clothing.
+Alice receives an URGENT email from her monitor, saying that transparency has been enabled. She breathes a sigh of relief. Finally, she can return to her passion of drop-shipping polyester clothing.
 
 (TODO: Write up how attacks would be detected. Site’s forking via different Logs, Logs forking via different Witnesses, etc.)
 
@@ -280,10 +316,6 @@ Currently, a Site could serve any sequence of checkpoints to a User over time, s
 ### Where does versioning go?
 
 Currently, the version string in our checkpoint defines the protocol version for the entire checkpoint. **This forces every Witness to use the same version.** If some Witnesses are slow to upgrade, this might be an issue. This might be a non-issue, since we don’t expect there to be many Witnesses, and they can all expose 2 signing endpoints during transition. So at some point, it should be possible to go from all-v1 to all-v2 without any downtime.
-
-Another issue is that the **TLS certificate extension is not versioned.** If the data structure is changed in the future, we will probably need to signal that with a new version number. How does X509 deal with conditioning parsing on a version number?
-
-One obvious solution is, since the extension ID is actually an OID, **we could make the OID be versioned.** Since the extension has an opaque field for a blob, we can easily condition parsing on the OID. One open question here is whether the OID version MUST match the version in the checkpoint.
 
 ### Checkpoint encoding is undefined
 
@@ -319,6 +351,8 @@ Another question is **how much can the checkpoints in different Logs for the sam
 
 Related to the trust issue, it is not clear how the ecosystem should handle a Log that stops responding to data requests. A non-functioning Log means an unaccountable Site. Again, third parties can detect this by simply querying the Log. Is this enough?
 
+Further a Log might even stop providing the checkpoints it is serving to its reliant Site. It may be valuable for third parties to have access to these checkpoints, though, and you can't just asked eg an Armored Witness for their latest checkpoint because they don't store them. One solution might be to **rely on [distributors](https://github.com/transparency-dev/distributor?tab=readme-ov-file#distributor) for up-to-date checkpoint data**.
+
 ### Log Providers can insert data the Site never asked for
 
 Currently, there is nothing preventing a Log Provider from inserting data into a Log that the Site never asked it to insert. In these cases, it would be impossible for the Site to prove to a third party that they didn’t request this. This seems like a pretty inherent problem. I’m not sure we can/want to handle this.
@@ -328,6 +362,16 @@ Currently, there is nothing preventing a Log Provider from inserting data into a
 We do not currently have a way for a Witness to authenticate Logs. In the current tlog ecosystem, this is done manually, since it’s quite small. One idea to scale this is to require logs to make a public key available at its `origin/.well-known/waict-pubkeys`. Tracking issue [here](https://github.com/C2SP/C2SP/issues/115). Also we might want the pubkey endpoint to adhere to HPKE Key Directory over HTTP.
 
 ## Changelog
+
+### Unreleased
+
+**Switched from TLS cert-based enrollment to an Enrollment Server system.**
+We now require the existence of a global Enrollment Server for all Sites, like [WEBCAT](https://securedrop.org/news/introducing-webcat-web-based-code-assurance-and-transparency/). This shift was for a few reasons:
+
+1. "Transparency mechanism for WAICT enrollment" is really not what CT was intended to be used for.
+1. You can enforce more transport mechanisms. The CT-based one requires a Site to have TLS. But now that enrollment is an interactive protocol, it can use whatever transport the Enrollment Server supports, e.g., Tor.
+1. You can enforce cooloff periods. The Enrollment Server can have a policy like "if you don't have an email registered for notifications, you have to wait 3 hours between requesting unenrollment and us updating the database." This can slow down attacks, or else force them to be more overt by adding a malicious payload to the Log.
+1. The enrollment is more extensible so you can embed information in the future without writing a brand new TLS cert extension and getting it approved. One way you might extend it is to include a list of developers (via, e.g., their OIDC identities) who MUST sign a manifest before the User should run it. This is what WEBCAT does.
 
 ### Draft 4
 
