@@ -153,90 +153,70 @@ To achieve the goals of this specification, it is necessary that the act of disa
 
 To this end, the Enrollment Server MUST make its database transparent. We leave the specifics of this mechanism out of scope.
 
-### Transparency metadata format
+### Transparency metadata formats
 
-When the Site serves its manifest, it will also serve a **checkpoint**—which contains the latest data about the Log—and the inclusion proof—which proves that the manifest hash is the last entry in the Log. The checkpoint has the following key-value structure, and the **inclusion proof** is an ordinary bytestring. (TODO: We don’t prescribe a format here. See [open problem](#checkpoint-encoding-is-undefined))
+We describe the structure of the transparency metadata that a Site presents to a User
+
+#### Spicy signature
+
+When the Site serves its manifest, it will also serve a **spicy signature**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The spicy signature contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-v1`. The spicy signature is of the form:
+```javascript
+{
+    "checkpoint": <b64>,
+    "inclusion": <b64>,
+    ...
+}
 ```
-// Checkpoint
-version => b"waict-v1"
-log_id => {
-	provider => b"somelog.logprovider.com",
-	site => b"https://mysite.example.co.uk:443",
-	revision => <bytes>,
-}
-log_metadata => {
-	root => <bytes>,
-	size => 20852163,
-}
-checkpoint_metadata => {
-	not_after => 1738603576,
-}
-signatures => [
-	{ timestamp => 1738580169, key_id => b"mypubkey-eMTsyYJMLUQ", sig => <bytes> },
-	{ timestamp => 1738580180, wit_id => b"someknownwit", key_id => b"wednesday", sig => <bytes> },
-]
-// Inclusion proof
-<bytes>
+where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint. The spicy signature MAY include other data in the object, so long as its keys do not conflict with the keys above.
+
+#### Checkpoint
+
+The checkpoint value in the spicy signature is the base64 encoding of a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md). The lines are as follows:
+1. Contains the `$log_provider/waict-v1.$site_origin.$revision` where `$log_provider` is the domain of the Log Provider, `$site_origin` is the base64 encoding of the Site origin `$scheme://$domain:$port`, and `$revision` is the base64-encoded revision string.
+1. Contains the decimal-encoded size of the Log Merkle tree.
+1. Contains the base64 encoding of the Log Merkle tree root.
+1. An extension line that contains "not_after " followed by the decimal-encoded Unix timestamp in seconds for the end of the validity period of this checkpoint.
+1. Empty
+1. All lines from here on are signature lines. They either have the key name of a Log Provider's or a Witness' public key.
+
+An example checkpoint is as follows:
+```
+eu.loggy.com/waict-v1.aHR0cHM6Ly9teXNpdGUuZXhhbXBsZS5jby51azo0NDM=.4f+RttBZgSA=
+20852163
+CsUYapGGPo4dkMgIAUqom/Xajj7h2fB2MPA3j2jxq2I=
+not_after 1738603576
+
+— loggy.com/mypubkey1 Az3grlgtzPICa5OS8npVmf1Myq/5IZniMp+ZJurmRDeOoRDe4URYN7u5/Zhcyv2q1gGzGku9nTo+zyWE+xeMcTOAYQ8=
+- trustedwitness/pubkey-39082034 enF8/MTPl4MBSsAHoqpaHf2iiI98t0VeCsfFYxHmkSx6OdWcB4u5SQPaSUBrPqKoms0NJ4sYB3nc6zP3BIqyrMMUTUY=
 ```
 
-We break down the structure by element. All values of the form `b"..."` are bytestrings with the ASCII encoding of their contents.
+### Spicy signature verification
 
-* **`version`** is the version identifier for this checkpoint
-* **`log_id`** contains the information that uniquely defines a Log:
-* **`provider`** is the domain of the Log Provider
-* **`site`** is the origin of the Site whose manifest is being logged. This includes scheme, domain, and port.
-* **`revision`** is the 64-bit tree revision
-* **`log_metadata`** contains the data about the Merkle tree data structure that underlies the Log:
-* **`root`** is the root hash of the tree
-* **`size`** is the number of leaves in the tree
-* **`checkpoint_metadata`** contains the non-manifest data that must also be included in the Log:
-* **`not_after`** is a 64-bit Unix timestamp, in seconds, representing the validity period of the checkpoint. After this time, the checkpoint is invalid.
-* **`signatures`** contains the signatures over all the other data in this checkpoint, plus a timestamp and key ID. Each signature has the following fields:
-    * **`timestamp`** is the 64-bit Unix timestamp, in seconds, at the time of signing. (TODO: We don’t use this timestamp anywhere. Do we keep it just because?)
-    * **`wit_id`** is a bytestring that uniquely identifies the signing Witness. This MUST be present when the signer is a Witness, and MUST NOT be present otherwise.
-    * **`key_id`** is a bytestring that uniquely identifies the public key within the key set of the signing Log Provider or Witness.
-    * **`sig`** is the signature over the non-signature parts of the checkpoint and the above fields
-    * **`inclusion`** is an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof of the manifest hash as the last leaf in the tree given above.
+Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest hash has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
 
-### User interpretation of transparency-logged scripts
-
-Before executing anything, a user must check that the transparency steps have been done correctly for the manifest. In addition, it cannot allow other Sites (or even forks of the same Site). We detail these below.
-
-#### Validity checks
-
-A User performs the following checks on the transparency data. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
-
-1. Ensure that `provider` and `revision` from the checkpoint together match at least one of the entries in the list contained in the logs field. Both these fields MUST be in the same entry.
-1. Ensure the `site` in the checkpoint matches the Site’s origin.
+1. Decode the `checkpoint` field of the spicy signature and parse it as a tlog checkpoint.
+1. Load the entry in the Enrollment Server's database corresponding to this Site. This is a list of Logs, defined by their `($log_provider, $site, $revision)` triple.
+1. Ensure the Site's origin matches the `$site` in each of the Logs in the database entry.
+1. Ensure that the Log defined in the first checkpoint line matches at least one of the Logs in the database entry.
 1. Ensure that the current time is not after the `not_after` timestamp in the checkpoint.
-1. Ensure a sufficient number of witness signatures verify.
-1. Ensure that the inclusion proof verifies with respect to the site-provided manifest and the `log_metadata` in the checkpoint.
+1. Ensure a sufficient number of witness signatures verify. It is RECOMMENDED that this threshold be at least 2.
+1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the manifest hash.
 
 #### Only verify Witness signatures
 
-Importantly, a User SHOULD NOT verify any signatures without a `wit_id`, i.e., signatures from a Log Provider. This is because the Log Provider’s public key is a remote resource that can be updated any time. Since one of our goals is to minimize round-trips, we cannot expect a client to fetch this on every verification. Further, if the public key is stored in a cache, a malicious Site colluding with a Log Provider can manipulate the public value to fingerprint users. This violates our goal of preserving privacy.
+A User SHOULD NOT verify any signatures whose key name is not that of a known Witness. There is no reason to do so, as it does not add security. Further, a User cannot verify the signature of a Log Provider without its public key, which may rotate arbitrarily. Since one of our goals is to minimize round-trips, we cannot expect a client to fetch this on every verification. Further, if the public key is stored in a cache, a malicious Site colluding with a Log Provider can manipulate the public value to fingerprint users. This violates our goal of preserving privacy.
 
-#### Witness public keys
+#### Witness trust ecosystem
 
-Witness signatures have a unique Witness identifier included. A User has a set of trusted witnesses. This is deployment-dependent, and may rely on a trust ecosystem involving browser vendors and Witnesses, similar to that of the Certification Authority trust ecosystem.
+Witness signatures have a unique Witness key name included, and may rely on a trust ecosystem involving browser vendors and Witnesses, similar to that of the Certification Authority trust ecosystem. This ecosystem is essential to the functioning of the system described in this spec, but we leave the details out of scope.
 
 ### Witness signing Logs
 
-(TODO: Could replace all this with the [tlog Witness API](https://github.com/C2SP/C2SP/blob/8991f70ddf8a11de3a68d5a081e7be27e59d87c8/tlog-witness.md), putting `not_after` as an extension line.)
-
-When a Witness receives a checkpoint and consistency proof from a Log Provider it MUST:
-
-1. Ensure that the consistency proof is valid with respect to the Witness’ copy of the old Log state (identified by the same `log_id` as in the checkpoint). This implicitly verifies that the tree size has not decreased.
-1. Ensure that the `not_after` timestamp is not too far in the future. Witnesses MUST choose this threshold for themselves and make it publicly known. (TODO: Vague)
-1. Ensure that at least one Log Provider signature (i.e., one without without `wit_ty` set) is present in the signatures list.
-1. Ensure that that signature verifies with respect to the Log Provider’s public key. (TODO: We don’t define how to get this public key. See [open problem](#log-providers-pubkey-specification-rotation--format-isnt-defined).)
-
-If all checks succeed, it will sign the checkpoint.  (TODO: Again, no spec on encoding)
+Witnesses MUST follow the [tlog Witness API](https://github.com/C2SP/C2SP/blob/8991f70ddf8a11de3a68d5a081e7be27e59d87c8/tlog-witness.md), which defines how Logs get updates signed.
 
 ### Log Provider endpoints
 
 A Log Provider MUST expose the following HTTP API. We let `$base` denote the domain of the Log Provider, as appears in the Enrollment Server mapping and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
-
 
 | Endpoint | Description |
 |-|-|
@@ -270,7 +250,7 @@ We discuss some failure modes and how the above construction proposes they be ha
 
 #### Log Provider failure
 
-If a Log Provider is down, a Site cannot make updates. Even worse, after the not_after time on the latest checkpoint, the Site will effectively go down even if there are no updates. When this happens, the Site can sign up with a new Log and re-enroll at the Enrollment Server with it. Another alternative is to unenroll from transparency entirely.
+If a Log Provider is down, a Site cannot make updates. Even worse, after the `not_after` time on the latest checkpoint, the Site will effectively go down even if there are no updates. When this happens, the Site can sign up with a new Log and re-enroll at the Enrollment Server with it. Another alternative is to unenroll from transparency entirely.
 
 #### Witness failure
 
@@ -316,10 +296,6 @@ Currently, a Site could serve any sequence of checkpoints to a User over time, s
 ### Where does versioning go?
 
 Currently, the version string in our checkpoint defines the protocol version for the entire checkpoint. **This forces every Witness to use the same version.** If some Witnesses are slow to upgrade, this might be an issue. This might be a non-issue, since we don’t expect there to be many Witnesses, and they can all expose 2 signing endpoints during transition. So at some point, it should be possible to go from all-v1 to all-v2 without any downtime.
-
-### Checkpoint encoding is undefined
-
-The byte level format of the checkpoint is entirely undefined right now. Some options are [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md), CBOR, JSON5, bincode, etc. It might be nice to make the format flexible, perhaps being signalled through content-type headers. It’d make verification harder bc if you have 3 Witnesses all of whom signed a different canonical encoding, then a verifier will have to encode the checkpoint 3 times to verify all the signatures. Also you’d need an encoding field in every signature entry to specify what encoding to use.
 
 ### Checkpoint location is undefined
 
@@ -372,6 +348,9 @@ We now require the existence of a global Enrollment Server for all Sites, like [
 1. You can enforce more transport mechanisms. The CT-based one requires a Site to have TLS. But now that enrollment is an interactive protocol, it can use whatever transport the Enrollment Server supports, e.g., Tor.
 1. You can enforce cooloff periods. The Enrollment Server can have a policy like "if you don't have an email registered for notifications, you have to wait 3 hours between requesting unenrollment and us updating the database." This can slow down attacks, or else force them to be more overt by adding a malicious payload to the Log.
 1. The enrollment is more extensible so you can embed information in the future without writing a brand new TLS cert extension and getting it approved. One way you might extend it is to include a list of developers (via, e.g., their OIDC identities) who MUST sign a manifest before the User should run it. This is what WEBCAT does.
+
+**Defined a concrete format for the spicy signature.**
+We previously punted on the specific format of the transparency (meta)data structure, and what precisely the Witness was signing. We are now using the tlog checkpoint format, and including it in a JSON object. This lets us piggyback on the tlog ecosystem of specs and deployments.
 
 ### Draft 4
 
