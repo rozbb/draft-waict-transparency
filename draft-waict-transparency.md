@@ -175,7 +175,7 @@ The checkpoint value in the tbundle is the base64 encoding of a [tlog checkpoint
 1. Contains the `$log_provider/waict-v1.$site_origin.$revision` where `$log_provider` is the domain of the Log Provider, `$site_origin` is the base64 encoding of the Site origin `$scheme://$domain:$port`, and `$revision` is the base64-encoded revision string.
 1. Contains the decimal-encoded size of the Log Merkle tree.
 1. Contains the base64 encoding of the Log Merkle tree root.
-1. An extension line that contains "not_after " followed by the decimal-encoded Unix timestamp in seconds for the end of the validity period of this checkpoint.
+1. An extension line that contains `"not_after "` followed by the decimal-encoded Unix timestamp in seconds for the end of the validity period of this checkpoint.
 1. Empty
 1. All lines from here on are signature lines. They either have the key name of a Log Provider's or a Witness' public key.
 
@@ -190,7 +190,7 @@ not_after 1738603576
 - trustedwitness/pubkey-39082034 enF8/MTPl4MBSsAHoqpaHf2iiI98t0VeCsfFYxHmkSx6OdWcB4u5SQPaSUBrPqKoms0NJ4sYB3nc6zP3BIqyrMMUTUY=
 ```
 
-### Spicy signature verification
+### Tbundle verification
 
 Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest hash has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
 
