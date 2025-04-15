@@ -10,7 +10,7 @@ We note that this document does NOT make any assumption about the structure or f
 
 We use the C2SP glossary for this document. This is an arbitrary choice but we need to pick something.
 
-* A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port.
+* A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
 * The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may have to store a lot of data, and be expected to have high uptime. **A Log Provider is identified by its domain.**
@@ -31,7 +31,7 @@ sequenceDiagram
   participant E as Enrollment<br/>Server
   participant L as Log Provider
   participant W as Witness
-  S->>E: Enroll in transparency <br/> w/ $log_provider and $log_id
+  S<<->>E: Enroll in transparency <br/> w/ $log_provider and $log_id
   note over S: Later
   S->>L: POST /append  site_contents.zip <br /> (contains manifest)
   note over L: Appends site_contents.zip to Log. <br/> Creates pre_checkpoint, containing: <br/> manifest hash, log id, epoch, provider sig
@@ -126,7 +126,7 @@ Content-Type: application/json
     ]
 }
 ```
-where `$site_origin` is the origin of the enrolling Site, formatted as `$scheme://$domain:$port`, and each `$log_provider` is a domain of a Log Provider, with syntax conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and each `$revision` is an 8-byte bytestring, encoded in base64. The Enrollment Server interprets each entry in `logs` as the Log defined by `($log_provider, $site_origin, $revision)`. To unenroll from transparency, the Site simply leaves `logs` empty. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation.
+where `$site_origin` is the origin of the enrolling Site, serialized as in [RFC 6454, section 6.1](https://www.rfc-editor.org/rfc/rfc6454.html#section-6.1) (i.e., `scheme://domain:port` form), and each `$log_provider` is a domain of a Log Provider, with syntax conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and each `$revision` is an 8-byte bytestring, encoded in base64. The Enrollment Server interprets each entry in `logs` as the Log defined by `($log_provider, $site_origin, $revision)`. To unenroll from transparency, the Site simply leaves `logs` empty. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation.
 
 If the request is well-formed, the Enrollment Server responds with a _challenge_ string. This string MUST have at least 128 bits of entropy, MUST NOT contain any characters outside the base64url alphabet, and MUST NOT include the base64 padding character ("=").
 ```
@@ -140,10 +140,10 @@ DrqKo-kHVw2FZURaLWayeyir5yiOaUVqZjboTmVbG1I
 
 (TODO: be more specific about response codes and content types. See eg the [ACME spec](https://www.rfc-editor.org/rfc/rfc8555.html#section-8.3))
 
-Upon receiving the challenge from the Enrollment Server, the Site copies it and exposes it at `$site_origin/.well-known/waict-enrollment-challenge`. The Enrollment Server polls this endpoint with `GET` requests until some timeout period. If it receives the same challenge string in response, the Enrollment Server updates its database to have the `$site_origin` map to the list of provided Logs.
+Upon receiving the challenge from the Enrollment Server, the Site copies it and exposes it at the well-known path (see [RFC 8615](https://www.rfc-editor.org/rfc/rfc8615.html)) `$site_origin/.well-known/waict-enrollment-challenge` (TODO: Register this well-known path with IANA). The Enrollment Server polls this endpoint with `GET` requests until some timeout period. If it receives the same challenge string in response, the Enrollment Server updates its database to have the `$site_origin` map to the list of provided Logs.
 (TODO: This diverges from the ACME challenge-response protocol in two ways. First, the Enrollment Server checks ownership by checking a response value from the Site rather than checking that a specific path returned a 200. Does this matter if we don't care to support concurrent enrollments? Second, there's no public key cryptography here, because there are no account keys. Do we want account keys like ACME?)
 
-The Enrollment Server MAY impose additional rules on its enrollment process. For example, if a Site is unenrolling and has not signed up for email notifications, the Enrollment Server might impose a three-hour "cooldown" period before the unenrollment goes into effect. Such rules are left out of scope.
+The Enrollment Server MAY impose additional rules on its enrollment process. For example, the Enrollment Server may offer email notifications for Site owners. Thus, it may have a rule that if a Site is unenrolling and has not signed up for email notifications, the Site must wait for a three-hour "cooldown" period before the unenrollment goes into effect. Such rules are left out of scope.
 
 A note on concurrency: in practice, a Site should not have a reason to enroll multiple times in short succession. If it does, though, the Enrollment Server may interleave events arbitrarily within its timeout window. That is, if a Site enrolls with request A, then enrolls with request B, then exposes the challenge for A, then exposes the challenge for B, the Enrollment Server may update its database to map the Site to the Logs in request A or request B, or none.
 
@@ -157,9 +157,9 @@ To this end, the Enrollment Server MUST make its database transparent. We leave 
 
 We describe the structure of the transparency metadata that a Site presents to a User
 
-#### Spicy signature
+#### WAICT transparency bundle (tbundle)
 
-When the Site serves its manifest, it will also serve a **spicy signature**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The spicy signature contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-v1`. The spicy signature is of the form:
+When the Site serves its manifest, it will also serve a **tbundle**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The tbundle contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-tbundle-v1`. The tbundle is of the form:
 ```javascript
 {
     "checkpoint": <b64>,
@@ -167,11 +167,11 @@ When the Site serves its manifest, it will also serve a **spicy signature**—wh
     ...
 }
 ```
-where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint. The spicy signature MAY include other data in the object, so long as its keys do not conflict with the keys above.
+where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint`. The tbundle MAY include other data in the object, so long as its keys do not conflict with the keys above.
 
 #### Checkpoint
 
-The checkpoint value in the spicy signature is the base64 encoding of a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md). The lines are as follows:
+The checkpoint value in the tbundle is the base64 encoding of a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md). The lines are as follows:
 1. Contains the `$log_provider/waict-v1.$site_origin.$revision` where `$log_provider` is the domain of the Log Provider, `$site_origin` is the base64 encoding of the Site origin `$scheme://$domain:$port`, and `$revision` is the base64-encoded revision string.
 1. Contains the decimal-encoded size of the Log Merkle tree.
 1. Contains the base64 encoding of the Log Merkle tree root.
@@ -194,7 +194,7 @@ not_after 1738603576
 
 Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest hash has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
 
-1. Decode the `checkpoint` field of the spicy signature and parse it as a tlog checkpoint.
+1. Decode the `checkpoint` field of the tbundle and parse it as a tlog checkpoint.
 1. Load the entry in the Enrollment Server's database corresponding to this Site. This is a list of Logs, defined by their `($log_provider, $site, $revision)` triple.
 1. Ensure the Site's origin matches the `$site` in each of the Logs in the database entry.
 1. Ensure that the Log defined in the first checkpoint line matches at least one of the Logs in the database entry.
@@ -220,10 +220,10 @@ A Log Provider MUST expose the following HTTP API. We let `$base` denote the dom
 
 | Endpoint | Description |
 |-|-|
-| `GET $base/latest?site=$site&rev=$rev` | Returns the latest checkpoint for the Log defined by `($base, $site, $rev)`. Where `$site` is the URL-encoded site origin (in `scheme + “://” + domain + “:” + port` form), and `$rev~ is the base64urlnopad encoding of the revision string. Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
+| `GET $base/latest?site=$site&rev=$revision` | Returns the latest checkpoint for the Log defined by `($base, $site, $revision)`. Where `$site` is the URL-encoded of the serialized Site origin (in `scheme://domain:port` form), and `$revision` is URL-encoded (defined in [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html)) 8-byte revision string, without padding characters. Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
 | `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. |
 | `GET $base/tile/$H/data/$K[.p/$W]` | Returns the manifest data for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
-| `POST $base/append?site=$site&rev=$rev [binary body] ` | Appends the given binary blob to the Log defined by `($base, $site, $rev)` as above. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the blob to check for well-formedness. (TODO: We don’t define quorum number or the format the blob has to be in) |
+| `POST $base/append?site=$site&rev=$rev [binary body]` | Appends the given binary blob to the Log defined by `($base, $site, $revision)` as above. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the blob to check for well-formedness. (TODO: We don’t define quorum number or the format the blob has to be in) |
 
 (TODO: Must define a GET endpoint to expose public keys that can be used to authenticate to a Witness. See [open problem](https://gist.github.com/#log-providers-pubkey-specification-rotation--format-isnt-defined).)
 
@@ -297,6 +297,8 @@ Currently, a Site could serve any sequence of checkpoints to a User over time, s
 
 Currently, the version string in our checkpoint defines the protocol version for the entire checkpoint. **This forces every Witness to use the same version.** If some Witnesses are slow to upgrade, this might be an issue. This might be a non-issue, since we don’t expect there to be many Witnesses, and they can all expose 2 signing endpoints during transition. So at some point, it should be possible to go from all-v1 to all-v2 without any downtime.
 
+In addition, we have `.well-known` endpoints without versions, and the version of the Enrollment Server request being encoded in JSON rather than the MIME type. This doesn't feel super cohesive.
+
 ### Checkpoint location is undefined
 
 It’s not clear where the website should put its checkpoint data for the User to verify. This can be in a CSP header, maybe.
@@ -349,7 +351,7 @@ We now require the existence of a global Enrollment Server for all Sites, like [
 1. You can enforce cooloff periods. The Enrollment Server can have a policy like "if you don't have an email registered for notifications, you have to wait 3 hours between requesting unenrollment and us updating the database." This can slow down attacks, or else force them to be more overt by adding a malicious payload to the Log.
 1. The enrollment is more extensible so you can embed information in the future without writing a brand new TLS cert extension and getting it approved. One way you might extend it is to include a list of developers (via, e.g., their OIDC identities) who MUST sign a manifest before the User should run it. This is what WEBCAT does.
 
-**Defined a concrete format for the spicy signature.**
+**Defined a concrete format for the tbundle.**
 We previously punted on the specific format of the transparency (meta)data structure, and what precisely the Witness was signing. We are now using the tlog checkpoint format, and including it in a JSON object. This lets us piggyback on the tlog ecosystem of specs and deployments.
 
 ### Draft 4
