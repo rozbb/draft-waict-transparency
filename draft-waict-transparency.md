@@ -13,14 +13,14 @@ We use the C2SP glossary for this document. This is an arbitrary choice but we n
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
-* The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may have to store a lot of data, and be expected to have high uptime. **A Log Provider is identified by its domain.**
+* The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may be expected to have high uptime. **A Log Provider is identified by its domain.**
 * A **Log** is a tamper-evident service that stores data in an authenticated, append-only data structure with a succinct representative. For simplicity, we will assume this is a Merkle tree with the representative being the root. A Site MAY use more than one Log at a time. **A Log is identified by the triple of: Log Provider, Site being logged, and revision, a 64-bit unique identifier for disambiguation.**
 * An **Actor** is any party that interfaces with a Log. They may also produce signatures of the Log root. There are a few specific kinds of Actors. We give some broad definitions below, but note that Actors can really do whatever.
     * A **Witness** makes sure that a Log’s root is consistent with its previous root. This will usually require (1) authentication, meaning the Log must prove that the root comes from the real Log’s origin (e.g., via a signature using a known public key), and (2) proof of consistency from an old epoch to a new epoch, which is usually a Merkle consistency proof. When convinced of this, a witness will sign the Log’s root.
     * An **Auditor** goes through the Log’s history and verifies some property about it. E.g., a key transparency Auditor might check that each key’s epoch is monotonically increasing over time. An Auditor may also sign the Log’s root.
     * A **Monitor** keeps track of the log and checks properties incrementally, alerting someone if a condition is triggered. For example, the Go sumdb log contains entries of the form `(package-name, version, hash)`. The owner of the `left_pad` package might pay for a logging service to email them whenever a package with the name `left_pad` is published. This way, the package owner will know if their package is being maliciously targeted.
 
-Finally, for this document, we will use **manifest hash** to refer to a 32-byte string that uniquely identifies the manifest being logged. This may be the hash of the manifest file, but we make no such requirement.
+Finally, for this document, we will use **manifest hash** to refer to a 32-byte string that uniquely identifies the manifest being logged.
 
 ## Construction overview
 
@@ -202,6 +202,25 @@ Depending on the enforcement mode, a User cannot execute or render anything unti
 1. Ensure a sufficient number of witness signatures verify. It is RECOMMENDED that this threshold be at least 2.
 1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the manifest hash.
 
+### Log entry format
+
+Every Log is a Merkle tree whose leaves are manifest hashes. Logs must also store data for each leaf, sufficient for any Auditor to find the original files in the relevant manifest. We define this data below.
+
+Recall that a Web Integrity Manifest consists of newline-separated hex-encoded SHA-256 hashes of assets. A Log entry is a JSON object whose keys are the same hex-encoded hashes in the same order, and whose values are strings containing URLs pointing to where the data can be downloaded. For example, the Log entry:
+```json
+{
+"81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02": "https://s3.aws.com/blob1",
+"fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c": "https://static.github.com/data.gif",
+"5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb": "ipfs://CQ+uzle90QIIKHy2bU62ciVlP++lSckhAn6XF1kxm70"
+}
+```
+corresponds to the manifest
+```
+81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02
+fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c
+5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb
+```
+
 #### Only verify Witness signatures
 
 A User SHOULD NOT verify any signatures whose key name is not that of a known Witness. There is no reason to do so, as it does not add security. Further, a User cannot verify the signature of a Log Provider without its public key, which may rotate arbitrarily. Since one of our goals is to minimize round-trips, we cannot expect a client to fetch this on every verification. Further, if the public key is stored in a cache, a malicious Site colluding with a Log Provider can manipulate the public value to fingerprint users. This violates our goal of preserving privacy.
@@ -224,8 +243,8 @@ A Log Provider MUST expose the following HTTP API. We let `$base` denote the dom
 
 Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
 | `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. |
-| `GET $base/tile/$H/data/$K[.p/$W]` | Returns the manifest data for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
-| `POST $base/append?site=$site&rev=$rev [binary body]` | Appends the given binary blob to the Log defined by `($base, $site, $revision)` as above. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the blob to check for well-formedness. (TODO: We don’t define quorum number or the format the blob has to be in) |
+| `GET $base/tile/$H/data/$K[.p/$W]` | Returns the Log entry for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
+| `POST $base/append?site=$site&rev=$rev [JSON Log entry]` | Stores the given Log entry to the Log defined by `($base, $site, $revision)` as above, and appends the corresponding manifest hash to the tree. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the entry to check for well-formedness. (TODO: We don’t define quorum number, or precisely what we mean by well-formedness) |
 
 (TODO: Must define a GET endpoint to expose public keys that can be used to authenticate to a Witness. See [open problem](https://gist.github.com/#log-providers-pubkey-specification-rotation--format-isnt-defined).)
 
@@ -264,7 +283,7 @@ Alice is the owner of `alicexpress.com`. As someone who cares a lot about provid
 
 #### Enrolling in a Log Provider
 
-First, Alice will pick her Log Provider. There is a large ecosystem of Log Providers, so she goes with one she’s heard good things about, Loggy. She sets up a Loggy account and selects the amount of storage she plans on using. Once her account is set up and she has downloaded an API key, she will create a new log on Loggy. She gives her full origin, `https://alicexpress.com:443`, and selects a random revision string, and clicks Submit.
+First, Alice will pick her Log Provider. There is a large ecosystem of Log Providers, so she goes with one she’s heard good things about, Loggy. Loggy also provides long-term binary storage, so she doesn't have to worry about deduplicating and hosting her own files for years. She sets up a Loggy account and selects the amount of storage she plans on using. Once her account is set up and she has downloaded an API key, she will create a new log on Loggy. She gives her full origin, `https://alicexpress.com:443`, and selects a random revision string, and clicks Submit.
 
 > [!NOTE]
 > Notice that Alice does not have to prove she owns alicexpress.com. To explain why, suppose Bob were registering a log for alicexpress.com. Then Bob’s account’s revision string would be unrelated to the revision string used on the actual site (Loggy would not allow two people to use the same revision on the same Site). Thus, the Log he creates is distinct from Alice’s, and no Log hijacking occurs.
@@ -293,7 +312,7 @@ There are many details of this protocol that we have not yet finalized, and some
 
 ### Rollback can happen within validity periods
 
-Currently, a Site could serve any sequence of checkpoints to a User over time, so long as they all have a not_after timestamp that’s in the future. This might be too much leeway for a malicious Site. It might be valuable to have **Users record the last tree size** and refuse any checkpoint with a smaller size. This has the downside of requiring users to maintain an integer for every site they visit with transparency enabled.
+Currently, a Site could serve any sequence of checkpoints to a User over time, so long as they all have a `not_after` timestamp that’s in the future. This might be too much leeway for a malicious Site. It might be valuable to have **Users record the last tree size** and refuse any checkpoint with a smaller size. This has the downside of requiring users to maintain an integer for every site they visit with transparency enabled.
 
 ### Where does versioning go?
 
@@ -363,7 +382,10 @@ We previously punted on the specific format of the transparency (meta)data struc
 **Clarified Log ID.** The glossary now says a Log Provider is identified by domain, a Site is identified by origin, and a Log is identified by (provider, site, revision).
 
 **Separated inclusion proof from checkpoint.** Previously, the inclusion proof was part of the checkpoint. This is not in keeping with the C2SP definition of checkpoint. Also, when a Log Provider serves its latest checkpoint, it should not need to also have an inclusion proof. So we separated the two notions.
+
 **Validity is not part of the leaf.** Previously, we hashed in the not-after metadata into the leaf hash. Since Log Providers cannot serve stale checkpoints, this means they have to re-request a new Log entry whenever refreshing the latest checkpoint. But recall that the Witness API permits signing requests for trees that have not changed. So if we just move the validity period to signed metadata, we allow Log Providers to do updates without extending their Log.
+
+**Defined Log entry format.** Previously, we never specified what a Log accepts as its data entries. It was thought to maybe be a zip file containing the manifest contents. Instead, it is just a JSON object with links to the manifest contents, file by file. This is nice for three reasons: 1) it separates out the concerns of blob storage with Log storage, since a Log Proivder doesn't necessarily need to have a ton of disks; 2) it settles the format very cleanly, since now we don't have to lock ourselves into a specific file type; and 3) it allows for easy deduplication of files, since you can just provide the same URL in multiple entries.
 
 ### Draft 3
 **Removed specification for how Witnesses authenticate Log Providers.** I think picking a URL schema and pubkey + rotation metadata format is premature. We can leave these undefined for now.
