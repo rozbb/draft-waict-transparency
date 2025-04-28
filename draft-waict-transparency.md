@@ -239,9 +239,7 @@ A Log Provider MUST expose the following HTTP API. We let `$base` denote the dom
 
 | Endpoint | Description |
 |-|-|
-| `GET $base/latest?site=$site&rev=$revision` | Returns the latest checkpoint for the Log defined by `($base, $site, $revision)`. Where `$site` is serialized Site origin (in `scheme://domain:port` form), `$revision` is the 8-byte revision string, and both are URL-encoded ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html).
-
-Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
+| `GET $base/latest?site=$site&rev=$revision` | Returns the latest checkpoint for the Log defined by `($base, $site, $revision)`. Where `$site` is serialized Site origin (in `scheme://domain:port` form), `$revision` is the 8-byte revision string, and both are URL-encoded ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html). Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
 | `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. |
 | `GET $base/tile/$H/data/$K[.p/$W]` | Returns the Log entry for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
 | `POST $base/append?site=$site&rev=$rev [JSON Log entry]` | Stores the given Log entry to the Log defined by `($base, $site, $revision)` as above, and appends the corresponding manifest hash to the tree. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the entry to check for well-formedness. (TODO: We don’t define quorum number, or precisely what we mean by well-formedness) |
