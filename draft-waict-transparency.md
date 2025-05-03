@@ -14,7 +14,7 @@ We use the C2SP glossary for this document. This is an arbitrary choice but we n
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
 * The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may be expected to have high uptime. **A Log Provider is identified by its domain.**
-* A **Log** is a tamper-evident service that stores data in an authenticated, append-only data structure with a succinct representative. For simplicity, we will assume this is a Merkle tree with the representative being the root. A Site MAY use more than one Log at a time. **A Log is identified by the triple of: Log Provider, Site being logged, and revision, a 64-bit unique identifier for disambiguation.**
+* A **Log** is a tamper-evident service that stores data in an authenticated, append-only data structure with a succinct representative. For simplicity, we will assume this is a Merkle tree with the representative being the root. A Site MAY use more than one Log at a time. **A Log is identified by its unique URL.**
 * An **Actor** is any party that interfaces with a Log. They may also produce signatures of the Log root. There are a few specific kinds of Actors. We give some broad definitions below, but note that Actors can really do whatever.
     * A **Witness** makes sure that a Log’s root is consistent with its previous root. This will usually require (1) authentication, meaning the Log must prove that the root comes from the real Log’s origin (e.g., via a signature using a known public key), and (2) proof of consistency from an old epoch to a new epoch, which is usually a Merkle consistency proof. When convinced of this, a witness will sign the Log’s root.
     * An **Auditor** goes through the Log’s history and verifies some property about it. E.g., a key transparency Auditor might check that each key’s epoch is monotonically increasing over time. An Auditor may also sign the Log’s root.
@@ -31,10 +31,10 @@ sequenceDiagram
   participant E as Enrollment<br/>Server
   participant L as Log Provider
   participant W as Witness
-  S<<->>E: Enroll in transparency <br/> w/ $log_provider and $log_id
+  S<<->>E: Enroll in transparency <br/> w/ Log URL
   note over S: Later
   S->>L: POST /append  site_contents.zip <br /> (contains manifest)
-  note over L: Appends site_contents.zip to Log. <br/> Creates pre_checkpoint, containing: <br/> manifest hash, log id, epoch, provider sig
+  note over L: Appends site_contents.zip to Log. <br/> Creates pre_checkpoint, containing: <br/> manifest hash, log URL, epoch, provider sig
   L->>W: POST /add-checkpoint <br /> pre_checkpoint, <br/> Merkle consistency proof
   note over W:  Checks sig and proof. <br /> On success appends own <br/>signature to the checkpoint
   W->>L: checkpoint
@@ -103,7 +103,7 @@ We’ll briefly state some more design requirements for any solution we come up 
 
 ### Signaling transparency to the User
 
-To enable transparency, a Site must register with the Enrollment Server, giving it the Site's desired Log. Each User is responsible for maintaining a reasonably up-to-date copy of the list of enrolled Sites (this can be done, e.g., by browser bundling and/or periodic polling).
+To enable transparency, a Site must register with the Enrollment Server, giving it the Site's desired Log(s). Each User is responsible for maintaining a reasonably up-to-date copy of the list of enrolled Sites (this can be done, e.g., by browser bundling and/or periodic polling).
 
 Specifically, the information that must be conveyed to a user is a mapping of Site origin to a list of Logs. The specific format of this is out of scope. Additional information MAY be included in the entries of the mapping, such as a list of authorized signers for manifests presented by the Site.
 
@@ -117,16 +117,10 @@ Content-Type: application/json
 {
     "version": 1,
     "site": $site_origin,
-    "logs": [
-        {
-            "log_provider": $log_provider,
-            "revision": $revision
-        },
-        ...
-    ]
+    "logs": [...]
 }
 ```
-where `$site_origin` is the origin of the enrolling Site, serialized as in [RFC 6454, section 6.1](https://www.rfc-editor.org/rfc/rfc6454.html#section-6.1) (i.e., `scheme://domain:port` form), and each `$log_provider` is a domain of a Log Provider, with syntax conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and each `$revision` is an 8-byte bytestring, encoded in base64. The Enrollment Server interprets each entry in `logs` as the Log defined by `($log_provider, $site_origin, $revision)`. To unenroll from transparency, the Site simply leaves `logs` empty. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation.
+where `$site_origin` is the origin of the enrolling Site, serialized as in [RFC 6454, section 6.1](https://www.rfc-editor.org/rfc/rfc6454.html#section-6.1) (i.e., `scheme://domain:port` form), and each entry of `logs` is a string containing a URL. Each URL MUST be of the form `$domain/waict-v1/$rest` where `$domain` is a domain conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and `$rest` is the rest of the path. To unenroll from transparency, the Site simply leaves `logs` empty in its request. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation. All such additional fields MUST have a key which starts with "x-".
 
 If the request is well-formed, the Enrollment Server responds with a _challenge_ string. This string MUST have at least 128 bits of entropy, MUST NOT contain any characters outside the base64url alphabet, and MUST NOT include the base64 padding character ("=").
 ```
@@ -159,7 +153,7 @@ We describe the structure of the transparency metadata that a Site presents to a
 
 #### WAICT transparency bundle (tbundle)
 
-When the Site serves its manifest, it will also serve a **tbundle**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The tbundle contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-tbundle-v1`. The tbundle is of the form:
+When the Site serves its manifest to the User, it will also serve a **tbundle**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The tbundle contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-tbundle-v1`. The tbundle is of the form:
 ```javascript
 {
     "checkpoint": <b64>,
@@ -167,13 +161,14 @@ When the Site serves its manifest, it will also serve a **tbundle**—which atte
     ...
 }
 ```
-where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint`. The tbundle MAY include other data in the object, so long as its keys do not conflict with the keys above.
+where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint`. The JSON object MAY contain additonal fields, whose interpretation is left to the User implementation. All such additional fields MUST have a key which starts with "x-".
+(TODO: Versioning here is in the MIME type, but above it's in the JSON object itself. We should probably pick one.)
 
 #### Checkpoint
 
 The checkpoint value in the tbundle is the base64 encoding of a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md). The lines are as follows:
-1. Contains the `$log_provider/waict-v1.$site_origin.$revision` where `$log_provider` is the domain of the Log Provider, `$site_origin` is the base64 encoding of the Site origin `$scheme://$domain:$port`, and `$revision` is the base64-encoded revision string.
-1. Contains the decimal-encoded size of the Log Merkle tree.
+1. Contains the unique Log URL.
+1. Contains the size of the Log Merkle tree, encoded as a base-10 integer in ASCII with no leading zeros.
 1. Contains the base64 encoding of the Log Merkle tree root.
 1. An extension line that contains `"not_after "` followed by the decimal-encoded Unix timestamp in seconds for the end of the validity period of this checkpoint.
 1. Empty
@@ -181,7 +176,7 @@ The checkpoint value in the tbundle is the base64 encoding of a [tlog checkpoint
 
 An example checkpoint is as follows:
 ```
-eu.loggy.com/waict-v1.aHR0cHM6Ly9teXNpdGUuZXhhbXBsZS5jby51azo0NDM=.4f+RttBZgSA=
+eu.loggy.com/waict-v1/aHR0cHM6Ly9teXNpdGUuZXhhbXBsZS5jby51azo0NDM=/4f-RttBZgSA=
 20852163
 CsUYapGGPo4dkMgIAUqom/Xajj7h2fB2MPA3j2jxq2I=
 not_after 1738603576
@@ -189,15 +184,15 @@ not_after 1738603576
 — loggy.com/mypubkey1 Az3grlgtzPICa5OS8npVmf1Myq/5IZniMp+ZJurmRDeOoRDe4URYN7u5/Zhcyv2q1gGzGku9nTo+zyWE+xeMcTOAYQ8=
 - trustedwitness/pubkey-39082034 enF8/MTPl4MBSsAHoqpaHf2iiI98t0VeCsfFYxHmkSx6OdWcB4u5SQPaSUBrPqKoms0NJ4sYB3nc6zP3BIqyrMMUTUY=
 ```
+In this example we chose to format the first line as having two more path segments: the base64url-encoded Site URL, followed by a base64url-encoded random 8-byte nonce.
 
 ### Tbundle verification
 
 Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest hash has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
 
 1. Decode the `checkpoint` field of the tbundle and parse it as a tlog checkpoint.
-1. Load the entry in the Enrollment Server's database corresponding to this Site. This is a list of Logs, defined by their `($log_provider, $site, $revision)` triple.
-1. Ensure the Site's origin matches the `$site` in each of the Logs in the database entry.
-1. Ensure that the Log defined in the first checkpoint line matches at least one of the Logs in the database entry.
+1. Load the entry in the Enrollment Server's database corresponding to this Site.
+1. Ensure that the first checkpoint line is byte-equivalent to a URL in the database entry.
 1. Ensure that the current time is not after the `not_after` timestamp in the checkpoint.
 1. Ensure a sufficient number of witness signatures verify. It is RECOMMENDED that this threshold be at least 2.
 1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the manifest hash.
@@ -221,6 +216,8 @@ fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c
 5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb
 ```
 
+Log entries MUST NOT have duplicate keys. The keys MAY appear in any order (not necessarily lexicography).
+
 #### Only verify Witness signatures
 
 A User SHOULD NOT verify any signatures whose key name is not that of a known Witness. There is no reason to do so, as it does not add security. Further, a User cannot verify the signature of a Log Provider without its public key, which may rotate arbitrarily. Since one of our goals is to minimize round-trips, we cannot expect a client to fetch this on every verification. Further, if the public key is stored in a cache, a malicious Site colluding with a Log Provider can manipulate the public value to fingerprint users. This violates our goal of preserving privacy.
@@ -233,16 +230,16 @@ Witness signatures have a unique Witness key name included, and may rely on a tr
 
 Witnesses MUST follow the [tlog Witness API](https://github.com/C2SP/C2SP/blob/8991f70ddf8a11de3a68d5a081e7be27e59d87c8/tlog-witness.md), which defines how Logs get updates signed.
 
-### Log Provider endpoints
+### Log endpoints
 
-A Log Provider MUST expose the following HTTP API. We let `$base` denote the domain of the Log Provider, as appears in the Enrollment Server mapping and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
+A Log MUST expose the following HTTP API. We let `$base` denote the Log URL, as appears in the Enrollment Server mapping and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
 
 | Endpoint | Description |
 |-|-|
-| `GET $base/latest?site=$site&rev=$revision` | Returns the latest checkpoint for the Log defined by `($base, $site, $revision)`. Where `$site` is serialized Site origin (in `scheme://domain:port` form), `$revision` is the 8-byte revision string, and both are URL-encoded ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html). Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
-| `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. |
+| `GET $base/latest` | Returns the latest checkpoint for the Log. Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
+| `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. (TODO: explain the format of `$K`. It is not so trival. Also, should fix `$H` and remove it from path. Ditto below) |
 | `GET $base/tile/$H/data/$K[.p/$W]` | Returns the Log entry for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
-| `POST $base/append?site=$site&rev=$rev [JSON Log entry]` | Stores the given Log entry to the Log defined by `($base, $site, $revision)` as above, and appends the corresponding manifest hash to the tree. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the entry to check for well-formedness. (TODO: We don’t define quorum number, or precisely what we mean by well-formedness) |
+| `POST $base/append [JSON Log entry]` | Stores the given Log entry, and appends the corresponding manifest hash to the tree. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the entry to check for well-formedness. (TODO: We don’t define quorum number, or precisely what we mean by well-formedness) |
 
 (TODO: Must define a GET endpoint to expose public keys that can be used to authenticate to a Witness. See [open problem](https://gist.github.com/#log-providers-pubkey-specification-rotation--format-isnt-defined).)
 
@@ -281,24 +278,21 @@ Alice is the owner of `alicexpress.com`. As someone who cares a lot about provid
 
 #### Enrolling in a Log Provider
 
-First, Alice will pick her Log Provider. There is a large ecosystem of Log Providers, so she goes with one she’s heard good things about, Loggy. Loggy also provides long-term binary storage, so she doesn't have to worry about deduplicating and hosting her own files for years. She sets up a Loggy account and selects the amount of storage she plans on using. Once her account is set up and she has downloaded an API key, she will create a new log on Loggy. She gives her full origin, `https://alicexpress.com:443`, and selects a random revision string, and clicks Submit.
-
-> [!NOTE]
-> Notice that Alice does not have to prove she owns alicexpress.com. To explain why, suppose Bob were registering a log for alicexpress.com. Then Bob’s account’s revision string would be unrelated to the revision string used on the actual site (Loggy would not allow two people to use the same revision on the same Site). Thus, the Log he creates is distinct from Alice’s, and no Log hijacking occurs.
+First, Alice will pick her Log Provider. There is a large ecosystem of Log Providers, so she goes with one she’s heard good things about, Loggy. Loggy also provides long-term binary storage, so she doesn't have to worry about deduplicating and hosting her own files for years. She sets up a Loggy account and selects the amount of storage she plans on using. Once her account is set up and she has downloaded an API key, she will create a new Log on Loggy. She gives her full origin, `https://alicexpress.com:443`, and asks for a unique Log URL. She creates an API key and is ready to start using the Log.
 
 #### Making a Log entry
 
-Now Alice can start embedding transparency data in her site. She configures her site build tool to call out to the `waictlog` binary. Given the site URL and a set of file paths, this tool will compute the files’ hashes, pick an expiry period, create a zip of all the files, and send everything to the Loggy API. On success, the API returns the checkpoint with signatures from multiple witnesses. Finally `waictlog` verifies the checkpoint has the correct Site, Log Provider, and revision, and will check the inclusion proof with respect to the leaf hash that it knows. If all succeeds, `waictlog` outputs the checkpoint.
+Now Alice can start embedding transparency data in her site. She configures her site build tool to call out to the `waictlog` binary. Given the site URL and a set of file paths, this tool will compute the files’ hashes, pick an expiry period, and send the manifest and all the file to the Loggy API. On success, the API returns the checkpoint with signatures from multiple witnesses. Finally `waictlog` verifies the checkpoint has the correct Log URL and checks the inclusion proof with respect to the leaf hash that it knows. If all succeeds, `waictlog` outputs the checkpoint.
 
 The build tool then embeds the file in the website. Alice can verify that all the transparency data is validating correctly by running her build with respect to `staging.alicexpress.com`, and using her browser’s dev tools.
 
 #### Enrolling in monitoring
 
-Since the entire purpose of this is to get alerts if her site is ever hacked, Alice needs to set up monitoring for herself. Again, there is a large ecosystem of monitors, so she picks one she’s heard of: Monity. She makes an account and creates a new alert for `alicexpress.com`. Any time a deployment occurs, she wants to receive an email with NOTICE in the subject line. And any time the transparency status of her site changes, i.e., addition/removal of Log Providers, or change of any revision numbers, or removal of transparency entirely, she wants to receive an email with URGENT in the subject line and have it sent to her personal email as well.
+Since the entire purpose of this is to get alerts if her site is ever hacked, Alice needs to set up monitoring for herself. Again, there is a large ecosystem of monitors, so she picks one she’s heard of: Monity. She makes an account and creates a new alert for `alicexpress.com`. Any time a deployment occurs, she wants to receive an email with NOTICE in the subject line. And any time the transparency status of her site changes, i.e., addition/removal of Log URLs (including unenrollment, which is removal of all Log URLs), she wants to receive an email with URGENT in the subject line and have it sent to her personal email as well.
 
 #### Enabling transparency
 
-Finally, Alice is ready to flip the switch. In order for her users to start using transparency, she needs to enroll with the Enrollment Server, indicating to it that she’s using Loggy and has a specific revision number. She performs the build for production, deploys, and checks that transparency is validating in her dev tools. She then runs `enrollify`, a `certbot`-like CLI. This will look for the transparency data in her site root and use the first Log it finds (Alice could specify these manually, and even include multiple Logs, but she has no need). It embeds the Log Provider and revision information in its POST request to the Enrollment Server, and updates the sites `/.well-known/waict-enrollment-challenge` endpoint accordingly. Once this protocol terminates, Alice is all done.
+Finally, Alice is ready to flip the switch. In order for her users to start using transparency, she needs to enroll with the Enrollment Server, using her unique Loggy Log URL. She performs the build for production, deploys, and checks that transparency is validating in her dev tools. She then runs `enrollify`, a `certbot`-like CLI. This will look for the transparency data in her site root and use the first Log it finds (Alice could specify these manually, and even include multiple Logs, but she has no need). It embeds the Log URL in its POST request to the Enrollment Server, and updates the sites `/.well-known/waict-enrollment-challenge` endpoint accordingly. Once this protocol terminates, Alice is all done and her Site is enrolled in transparency.
 
 Alice receives an URGENT email from her monitor, saying that transparency has been enabled. She breathes a sigh of relief. Finally, she can return to her passion of drop-shipping polyester clothing.
 
@@ -336,9 +330,9 @@ Two possible solutions are:
 Suppose we could catch all types of forking. For completeness, here are two more:
 
 1. A Site could fork the view of their assets by simply using two different Log Providers, getting two different checkpoints, and presenting one or the other to a User.
-1. Even more simply, a Site could fork the view of their assets by using two different revision numbers for their two views.
+1. Even more simply, a Site could fork the view of their assets by using two different Log URLs for their two views.
 
-Currently, these two can be detected by monitoring CT logs, since Log Provider and revision data are stored in the TLS leaf cert. 
+Currently, these two can be detected by monitoring CT logs, since Log URLs are stored in the enrollment data.
 
 **The question is whether the mere detection of forks is sufficient.** There is no formalized notion of trust in Log Providers. So if a Log Provider is found to be acting maliciously, will this result in a sufficiently strong social pushback against the Log Provider and all the Sites that use it? Honest Sites can hedge against malicious Log Providers by using more than one. Of course, they are not free, so this costs more.
 
@@ -372,6 +366,9 @@ We now require the existence of a global Enrollment Server for all Sites, like [
 
 **Defined a concrete format for the tbundle.**
 We previously punted on the specific format of the transparency (meta)data structure, and what precisely the Witness was signing. We are now using the tlog checkpoint format, and including it in a JSON object. This lets us piggyback on the tlog ecosystem of specs and deployments.
+
+**Removed notion of Log ID and revision.**
+These weren't doing anything. A Log should be uniquely defined by its URL. This is enough, and it simplifies our document and API a lot. One thing becomes more lax, though: since the Log URL isn't assumed to have any structure, you cannot check that the Site's URL appears in the Log URL. So a third party could clone a Site and serve all the original Site's checkpoints as if it were their own. This is not really a problem though, in my opinion.
 
 ### Draft 4
 
