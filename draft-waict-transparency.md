@@ -2,15 +2,14 @@
 
 ## Introduction
 
-This document is a supplement to the [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZHXkWRFvKGEifdcMthUfv-LxIbg6bx2o/edit?tab=t.0#heading=h.hqduv7qhbp3k) specification. It proposes a set of use cases for web application manifest transparency, some protocols that attempt to achieve this, and open problems which need to be resolved.
+This document is a supplement to the [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZHXkWRFvKGEifdcMthUfv-LxIbg6bx2o/edit?tab=t.0#heading=h.hqduv7qhbp3k) specification. It proposes a set of use cases for web application transparency, some protocols that attempt to achieve this, and open problems which need to be resolved.
 
-We note that this document does NOT make any assumption about the structure or functioning of web application manifest integrity. We take as a given that there is a unique 32-byte sequence which uniquely identifies the set of assets that a website cares to protect (in practice, the hash of something(s)).
+We note that this document does NOT make any assumption about the structure or functioning of web application integrity. We take as a given that there is a unique 32-byte sequence which uniquely identifies the set of assets that a website cares to protect (in practice, the hash of something(s)).
 
 ## Glossary
 
-We use the C2SP glossary for this document. This is an arbitrary choice but we need to pick something.
-
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
+* A **manifest** is a file that commits to the content served by the site.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
 * The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may be expected to have high uptime. **A Log Provider is identified by its domain.**
@@ -20,7 +19,8 @@ We use the C2SP glossary for this document. This is an arbitrary choice but we n
     * An **Auditor** goes through the Log’s history and verifies some property about it. E.g., a key transparency Auditor might check that each key’s epoch is monotonically increasing over time. An Auditor may also sign the Log’s root.
     * A **Monitor** keeps track of the log and checks properties incrementally, alerting someone if a condition is triggered. For example, the Go sumdb log contains entries of the form `(package-name, version, hash)`. The owner of the `left_pad` package might pay for a logging service to email them whenever a package with the name `left_pad` is published. This way, the package owner will know if their package is being maliciously targeted.
 
-Finally, for this document, we will use **manifest hash** to refer to a 32-byte string that uniquely identifies the manifest being logged.
+Finally, the **WAICT integrity policy headers** are the Site's Content Seucrity Policy (CSP) headers that pertain to WAICT integrity. These headers contain the manifest hash as well as information on what types of assets will have integrity enforced (HTML, scripts, images, etc.), and what level of enforcement they are subject to (check-before-run, check-while-run, etc.).
+
 
 ## Construction overview
 
@@ -33,34 +33,35 @@ sequenceDiagram
   participant W as Witness
   S<<->>E: Enroll in transparency <br/> w/ Log URL
   note over S: Later
-  S->>L: POST /append  site_contents.zip <br /> (contains manifest)
-  note over L: Appends site_contents.zip to Log. <br/> Creates pre_checkpoint, containing: <br/> manifest hash, log URL, epoch, provider sig
-  L->>W: POST /add-checkpoint <br /> pre_checkpoint, <br/> Merkle consistency proof
-  note over W:  Checks sig and proof. <br /> On success appends own <br/>signature to the checkpoint
-  W->>L: checkpoint
-  L->>S: checkpoint
-  note over S: Site stores checkpoint
+  S->>L: POST /append integrity_policy, <br /> site_contents.zip
+  note over L: Saves site contents <br /> Appends integrity policy to Log. <br/> Creates + signs checkpoint for new root.
+  L->>W: POST /add-checkpoint <br /> checkpoint, <br/> Merkle consistency proof
+  note over W:  Checks sig and proof. <br /> On success, appends own <br/>signature to checkpoint
+  W->>L: cosigned_checkpoint
+  L->>S: cosigned_checkpoint
+  note over S: Stores cosigned_checkpoint
   note over U: Much later
   U->>S: GET /image.png
-  S->>U:image + integrity header + <br /> manifest + checkpoint + <br/> inclusion proof
-  note over U: Checks integrity and Witness <br/> sig over manifest hash
+  S->>U:image + integrity policy + <br /> manifest + cosigned_checkpoint + <br/> inclusion proof
+  note over U: Checks integrity and <br /> verifies checkpoint
 ```
 
 We describe the shape of a web application manifest transparency solution here. The details are very important, and we discuss them at length later on. At a high level:
 
 1. A Site picks a Log Provider, creates a new Log, and enrolls in web transparency via the Enrollment Server.
-1. The Site includes in its manifest a hash of each of the assets it wishes to enforce the integrity of.
-1. The Site sends the manifest and transparency metadata (and possibly a package of all the files) to the Log Provider.
-1. The Log Provider records everything, appends to its Log, and gets the new root signed by a Witness.
-1. User's periodically update their list of Sites with transparency enabled, either by polling the Enrollment Server's database or by browser updates.
-1. When receiving a manifest from a transparency-enabled site, the User checks the transparency data, ensuring that the origin matches the Site’s, and that the Witness signatures verify.
+1. The Site includes in its manifest a hash of each of the assets it wishes to enforce the integrity of. It also creates an integrity policy and puts the hash of the manifest in it.
+1. The Site sends the integrity policy, the manifest, and a copy of the all assets in the manifest to the Log Provider.
+1. The Log Provider stores the assets and manifest, appends the integrity policy to its Log, and gets the new root signed by a Witness.
+1. User's periodically fetches the newest list of Sites with transparency enabled, e.g., by polling the Enrollment Server's database or by updating their browser.
+1. When receiving a manifest, integrity policy, and transparency proof from a transparency-enabled site, the User checks the proof. In this step, the user must ensure that the proof's origin matches the Site's and that the Witness's signatures on the proof verify.
 1. If any checks fail, the User fails closed.
+1. The User now performs all integrity checks as defined in the integrity policy.
 
 (TODO: Include rough estimates for Log storage requirements (and witness if required))
 
 ## Motivating transparency
 
-We give a few scenarios in which a transparency mechanism for webapp manifests would meaningfully improve security or add useful features to the internet ecosystem. These will be our motivating use cases when constructing the protocol.
+We give a few scenarios in which a transparency mechanism for webapps would meaningfully improve security or add useful features to the internet ecosystem. These will be our motivating use cases when constructing the protocol.
 
 ### Javascript cryptography
 
@@ -68,7 +69,7 @@ We give a few scenarios in which a transparency mechanism for webapp manifests w
 
 The status quo for trust in in-browser Javascript cryptography is the same as that from 2011, namely that it is [considered harmful](https://web.archive.org/web/20200731144044/https://www.nccgroup.com/us/about-us/newsroom-and-events/blog/2011/august/javascript-cryptography-considered-harmful/). The primary reason comes down to code distribution. Consider WhatsApp as an example. WhatsApp currently hosts a web application which generates cryptographic material in the client’s browser that lets users view their end-to-end encrypted messages. What is to stop WhatsApp from simply modifying their Javascript to exfiltrate those same keys? [The answer for WhatsApp specifically](https://blog.cloudflare.com/cloudflare-verifies-code-whatsapp-web-serves-users/) is “Cloudflare co-signs all Javascript used in the webapp, and clients with a special plugin check the signature before running it.” This ensures that, if WhatsApp launched such an attack on a User with the plugin, it would be evident from Cloudflare’s data. This works fine for WhatsApp, but this is a bespoke solution that is unavailable to anyone but Meta. There are non-E2EE-related JS payloads that benefit from transparency as well, such as verifying code attestation signatures in [private compute](https://tinfoil.sh/blog/2025-02-03-running-private-deepseek).
 
-There is thus good reason to have an open easy-to-join ecosystem which does something similar to "third party co-signs all Javascript used." This would work for any code distribution method, including via the site or a third-party CDN. We can achieve this with webapp manifest transparency. It can open the stage for all kinds of client-side cryptography like Proton Mail, CryptPad, Tinfoil, or a Signal web app.
+There is thus good reason to have an open easy-to-join ecosystem which does something similar to "third party co-signs all Javascript used." This would work for any code distribution method, including via the site or a third-party CDN. We can achieve this with webapp transparency. It can open the stage for all kinds of client-side cryptography like Proton Mail, CryptPad, Tinfoil, or a Signal web app.
 
 #### Monitoring tampering
 
@@ -86,7 +87,7 @@ This compliance could be done by the Site itself or one of the Site’s CDNs. It
 
 There are services which authenticate user data, e.g., DKIM signatures on emails or OpenID tokens for authorization. Authentication usually amounts to a signature verification using a public key that can be found at a well-known URL. However, servers running these protocols usually rotate the public keys multiple times a year. It is not clear, then, how one would authenticate a claim regarding an email or token that existed a year ago. It would be nice, then, if there were a log that stored historical public keys.
 
-Webapp manifest transparency is a natural solution in this case. The Site that hosts the public keys would include the well-known URL in their manifest, and include it in the Log. The verifier would check the transparency details before using the public key. Thus the Log contains all the public keys that have ever been used for verification.
+Webapp transparency is a natural solution in this case. The Site that hosts the public keys would include the well-known URL in their manifest, which is itself included the Log. The verifier would check the transparency details before using the public key. Thus the Log contains all the public keys that have ever been used for verification.
 
 Such a deployment would also carry the other benefits of transparency, e.g., being able to detect attacks in real time, and learning rotation rates as a signal for caching policy or possible breaches.
 
@@ -153,7 +154,7 @@ We describe the structure of the transparency metadata that a Site presents to a
 
 #### WAICT transparency bundle (tbundle)
 
-When the Site serves its manifest to the User, it will also serve a **tbundle**—which attests to the fact that the manifest is the latest in a Log and that one or more Witnesses have observed the Log's last update. The tbundle contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-tbundle-v1`. The tbundle is of the form:
+When the Site serves its manifest and integrity policy to the User, it will also serve a **tbundle**—which attests to the fact that the integrity policy is the latest in a Log and that one or more Witnesses have observed the Log's last update. The tbundle contains an **inclusion proof**, encoding the first fact, and a **checkpoint**, encoding the second fact. It MUST be served, either embedded within a page or in a separate request, with the MIME type `application/waict-tbundle-v1`. The tbundle is of the form:
 ```javascript
 {
     "checkpoint": <b64>,
@@ -161,7 +162,7 @@ When the Site serves its manifest to the User, it will also serve a **tbundle**�
     ...
 }
 ```
-where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the manifest hash is the last leaf in the tree whose root appears in `checkpoint`. The JSON object MAY contain additonal fields, whose interpretation is left to the User implementation. All such additional fields MUST have a key which starts with "x-".
+where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the given integrity policy is the last leaf in the tree whose root appears in `checkpoint`. The JSON object MAY contain additonal fields, whose interpretation is left to the User implementation. All such additional fields MUST have a key which starts with "x-".
 (TODO: Versioning here is in the MIME type, but above it's in the JSON object itself. We should probably pick one.)
 
 #### Checkpoint
@@ -188,18 +189,19 @@ In this example we chose to format the first line as having two more path segmen
 
 ### Tbundle verification
 
-Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest hash has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
+Depending on the enforcement mode, a User cannot execute or render anything until the inclusion of the asset's hash is checked in the manifest, and the manifest's inclusion in the Log has been validated. We detail these steps below. If any of these fail the browser MUST pause page load and notify the user. The User MUST:
 
 1. Decode the `checkpoint` field of the tbundle and parse it as a tlog checkpoint.
 1. Load the entry in the Enrollment Server's database corresponding to this Site.
 1. Ensure that the first checkpoint line is byte-equivalent to a URL in the database entry.
 1. Ensure that the current time is not after the `not_after` timestamp in the checkpoint.
 1. Ensure a sufficient number of witness signatures verify. It is RECOMMENDED that this threshold be at least 2.
-1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the manifest hash.
+1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the integrity policy hash.
+1. Ensure that the hash of the manifest matches the manifest hash field in the integrity policy.
 
 ### Log entry format
 
-Every Log is a Merkle tree whose leaves are manifest hashes. Logs must also store data for each leaf, sufficient for any Auditor to find the original files in the relevant manifest. We define this data below.
+Every Log is a Merkle tree whose leaves ("data tiles" in tlog terms) are integrity policies. Logs must also store auxiliary data for each leaf, sufficient for any Auditor to find the original files in the relevant manifest. We define this auxiliary data below.
 
 Recall that a Web Integrity Manifest consists of newline-separated hex-encoded SHA-256 hashes of assets. A Log entry is a JSON object whose keys are the same hex-encoded hashes in the same order, and whose values are strings containing URLs pointing to where the data can be downloaded. For example, the Log entry:
 ```json
@@ -274,7 +276,7 @@ If a single Witness is down, a Log Provider can simply request another Witness t
 
 ## Example workflow: A Site enrolling in transparency
 
-Alice is the owner of `alicexpress.com`. As someone who cares a lot about providing a consistent user experience for her customers, she has already enabled web application manifest integrity on her site. But she would like to go one step further and make sure that, if her server is ever hacked and starts changing what her clients see, she’ll know about it.
+Alice is the owner of `alicexpress.com`. As someone who cares a lot about providing a consistent user experience for her customers, she has already enabled web application integrity on her site. But she would like to go one step further and make sure that, if her server is ever hacked and starts changing what her clients see, she’ll know about it.
 
 #### Enrolling in a Log Provider
 
@@ -282,7 +284,7 @@ First, Alice will pick her Log Provider. There is a large ecosystem of Log Provi
 
 #### Making a Log entry
 
-Now Alice can start embedding transparency data in her site. She configures her site build tool to call out to the `waictlog` binary. Given the site URL and a set of file paths, this tool will compute the files’ hashes, pick an expiry period, and send the manifest and all the file to the Loggy API. On success, the API returns the checkpoint with signatures from multiple witnesses. Finally `waictlog` verifies the checkpoint has the correct Log URL and checks the inclusion proof with respect to the leaf hash that it knows. If all succeeds, `waictlog` outputs the checkpoint.
+Now Alice can start embedding transparency data in her site. She configures her site build tool to call out to the `waictlog` binary. Given the site URL and a set of file paths, this tool will compute the files’ hashes, pick an expiry period, and send the integrity policy, manifest, and all the files to the Loggy API. On success, the API returns the checkpoint with signatures from multiple witnesses. Finally `waictlog` verifies the checkpoint has the correct Log URL and checks the inclusion proof with respect to the leaf hash that it knows. If all succeeds, `waictlog` outputs the checkpoint.
 
 The build tool then embeds the file in the website. Alice can verify that all the transparency data is validating correctly by running her build with respect to `staging.alicexpress.com`, and using her browser’s dev tools.
 
@@ -314,7 +316,7 @@ In addition, we have `.well-known` endpoints without versions, and the version o
 
 ### Checkpoint location is undefined
 
-It’s not clear where the website should put its checkpoint data for the User to verify. This can be in a CSP header, maybe.
+It’s not clear where the website should put its checkpoint when serving user requests. It should be in a standardized place so browsers know where to look for it. Maybe in a CSP header, maybe in a `<script>` tag with `name="integrity-page-manifest"`, as currently proposed in the WAICT integrity doc.
 
 ### Forking a Log by picking different Witnesses
 
@@ -366,6 +368,9 @@ We now require the existence of a global Enrollment Server for all Sites, like [
 
 **Defined a concrete format for the tbundle.**
 We previously punted on the specific format of the transparency (meta)data structure, and what precisely the Witness was signing. We are now using the tlog checkpoint format, and including it in a JSON object. This lets us piggyback on the tlog ecosystem of specs and deployments.
+
+**Made Log leaves store integrity policies, not manifests.**
+Previously, Logs only stored manifests. Site integrity is not governed by just manifests, though, but also its integrity policy. Since integrity policies contain the manifest hash, it suffices to just include the integrity policy in the Log.
 
 **Removed notion of Log ID and revision.**
 These weren't doing anything. A Log should be uniquely defined by its URL. This is enough, and it simplifies our document and API a lot. One thing becomes more lax, though: since the Log URL isn't assumed to have any structure, you cannot check that the Site's URL appears in the Log URL. So a third party could clone a Site and serve all the original Site's checkpoints as if it were their own. This is not really a problem though, in my opinion.
