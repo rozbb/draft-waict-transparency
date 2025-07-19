@@ -42,7 +42,7 @@ sequenceDiagram
   note over S: Stores cosigned_checkpoint
   note over U: Much later
   U->>S: GET /image.png
-  S->>U:image + integrity policy + <br /> manifest + cosigned_checkpoint + <br/> inclusion proof
+  S->>U:image + integrity policy + <br /> manifest + cosigned_checkpoint + <br/> inclusion proof + timestamp
   note over U: Checks integrity and <br /> verifies checkpoint
 ```
 
@@ -50,10 +50,10 @@ We describe the shape of a web application manifest transparency solution here. 
 
 1. A Site picks a Log Provider, creates a new Log, and enrolls in web transparency via the Enrollment Server.
 1. The Site includes in its manifest a hash of each of the assets it wishes to enforce the integrity of. It also creates an integrity policy and puts the hash of the manifest in it.
-1. The Site sends the integrity policy, the manifest, and a copy of the all assets in the manifest to the Log Provider.
-1. The Log Provider stores the assets and manifest, appends the integrity policy to its Log, and gets the new root signed by a Witness.
+1. The Site sends the integrity policy, the policy's timestamp, the manifest, and a copy of the all assets in the manifest to the Log Provider.
+1. The Log Provider stores the assets and manifest, appends the integrity policy (and timestamp) to its Log, and gets the new root signed by a Witness.
 1. User's periodically fetches the newest list of Sites with transparency enabled, e.g., by polling the Enrollment Server's database or by updating their browser.
-1. When receiving a manifest, integrity policy, and transparency proof from a transparency-enabled site, the User checks the proof. In this step, the user must ensure that the proof's origin matches the Site's and that the Witness's signatures on the proof verify.
+1. When receiving a manifest, timestamp, integrity policy, and transparency proof from a transparency-enabled site, the User checks the proof. In this step, the user must ensure that the proof's origin matches the Site's and that the Witness's signatures on the proof verify.
 1. If any checks fail, the User fails closed.
 1. The User now performs all integrity checks as defined in the integrity policy.
 
@@ -199,27 +199,6 @@ Depending on the enforcement mode, a User cannot execute or render anything unti
 1. Ensure that the inclusion proof verifies with respect to the tree root and size in the checkpoint, and the integrity policy hash.
 1. Ensure that the hash of the manifest matches the manifest hash field in the integrity policy.
 
-### Log entry format
-
-Every Log is a Merkle tree whose leaves ("data tiles" in tlog terms) are integrity policies. Logs must also store auxiliary data for each leaf, sufficient for any Auditor to find the original files in the relevant manifest. We define this auxiliary data below.
-
-Recall that a Web Integrity Manifest consists of newline-separated hex-encoded SHA-256 hashes of assets. A Log entry is a JSON object whose keys are the same hex-encoded hashes in the same order, and whose values are strings containing URLs pointing to where the data can be downloaded. For example, the Log entry:
-```json
-{
-"81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02": "https://s3.aws.com/blob1",
-"fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c": "https://static.github.com/data.gif",
-"5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb": "ipfs://CQ+uzle90QIIKHy2bU62ciVlP++lSckhAn6XF1kxm70"
-}
-```
-corresponds to the manifest
-```
-81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02
-fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c
-5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb
-```
-
-Log entries MUST NOT have duplicate keys. The keys MAY appear in any order (not necessarily lexicography).
-
 #### Only verify Witness signatures
 
 A User SHOULD NOT verify any signatures whose key name is not that of a known Witness. There is no reason to do so, as it does not add security. Further, a User cannot verify the signature of a Log Provider without its public key, which may rotate arbitrarily. Since one of our goals is to minimize round-trips, we cannot expect a client to fetch this on every verification. Further, if the public key is stored in a cache, a malicious Site colluding with a Log Provider can manipulate the public value to fingerprint users. This violates our goal of preserving privacy.
@@ -232,18 +211,74 @@ Witness signatures have a unique Witness key name included, and may rely on a tr
 
 Witnesses MUST follow the [tlog Witness API](https://github.com/C2SP/C2SP/blob/8991f70ddf8a11de3a68d5a081e7be27e59d87c8/tlog-witness.md), which defines how Logs get updates signed.
 
+### What is stored in the Log
+
+An entry in a Log's Merkle tree is a timestamped integrity policy. Specifically, it is of the form `$timestamp || $policy`, where `$policy` is the serialized integrity policy and `$timestamp` is a big-endian encoding of the 64-bit Unix timestamp in seconds of the time the policy was added to the tree, and `||` denotes concatenation.
+
+(TODO: is there anything that ties this timestamp to reality? does this value need to be validated against something else? Maybe as a very basic test the user should check that the timestamp is less than the provided checkpoints `not_after`? Even better, it could check that it's before the Witness signature's timestamp.)
+
+#### Leaf Entries
+
+Every Log is a Merkle tree whose leaf entries are integrity policies. Logs must also store auxiliary data for each entry, namely the manifest itself, and its associated **asset pointers**, a map of hashes to URLs so that any Auditor can find the original files referenced by hash in the manifest.
+
+The manifest file is defined in the WAICT integrity spec, so we need only define the asset pointers. This is a JSON object whose keys are zero-padded hex-encoded hashes (same as those that appear in the manifest), and whose values are URLs. For example, an asset pointer object may look like:
+```json
+{
+"81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02": "https://s3.aws.com/blob1",
+"fbd1d07879e672fd4557a2fa1bb2e435d88eac072f8903020a18672d5eddfb7c": "https://static.github.com/data.gif",
+"5e737a67c38189a01f73040b06b4a0393b7ea71c86cf73744914bbb0cf0062eb": "ipfs://CQ+uzle90QIIKHy2bU62ciVlP++lSckhAn6XF1kxm70"
+}
+```
+Asset pointer objects MUST NOT have duplicate keys. The keys MAY appear in any order (not necessarily lexicography).
+
 ### Log endpoints
 
-A Log MUST expose the following HTTP API. We let `$base` denote the Log URL, as appears in the Enrollment Server mapping and the checkpoint. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
+A Log MUST expose the following HTTP API. We let `$base` denote the Log URL, as appears in the Enrollment Server mapping and the checkpoint, and `$storage` denote the URL where the tree tiles are stored. We draw largely from the [`static-ct`](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#merkle-tree) and [Go `sumdb`](https://go.dev/ref/mod#checksum-database) APIs.
 
-| Endpoint | Description |
-|-|-|
-| `GET $base/latest` | Returns the latest checkpoint for the Log. Logs MUST serve a checkpoint whose `not_after` has not elapsed. |
-| `GET $base/tile/$H/$L/$K[.p/$W]` | Returns a Log tile, which is a set of hashes that make up a section of the Log. Each tile is defined in a two-dimensional coordinate at tile level `$L`, `$K`th from the left, with a tile height of `$H`. The optional `.p/$W` suffix indicates a partial log tile with only `$W` hashes. Callers must fall back to fetching the full tile if a partial tile is not found. (TODO: explain the format of `$K`. It is not so trival. Also, should fix `$H` and remove it from path. Ditto below) |
-| `GET $base/tile/$H/data/$K[.p/$W]` | Returns the Log entry for the leaf hashes in `/tile/$H/0/$K[.p/$W]` (with a literal data path element). |
-| `POST $base/append [JSON Log entry]` | Stores the given Log entry, and appends the corresponding manifest hash to the tree. Returns a checkpoint signed by a quorum number of Witnesses. The Log Provider MAY inspect the entry to check for well-formedness. (TODO: We don’t define quorum number, or precisely what we mean by well-formedness) |
+The endpoints in this section do not include those in `/.well-known/...`, which are necessary to authorize the Log to the Enrollment Server and Witness.
 
-(TODO: Must define a GET endpoint to expose public keys that can be used to authenticate to a Witness. See [open problem](https://gist.github.com/#log-providers-pubkey-specification-rotation--format-isnt-defined).)
+#### Append
+
+The `$base/append` endpoint accepts POST requests with content type `application/cbor`, with the CBOR-encoded structure (using JSON notation for the CBOR object):
+```json
+{
+    "integrity_policy": $integrity_policy,
+    "manifest": $manifest,
+    "asset_pointers": $asset_pointers,
+}
+```
+where each value is a bytestring representing the serialized integrity policy, serialized Site manifest object, and serialized asset pointer object, respectively.
+
+The response has content type `application/cbor`, and contains the CBOR object (notated the same):
+```json
+{
+    "timestamp": $timestamp,
+    "checkpoint": $checkpoint,
+    "inclusion": $inclusion,
+}
+```
+where `$timestamp` is the current time, encoded as a big-endian 64-bit Unix timestamp, `$checkpoint` is a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md) cosigned by a quorum of Witnesses (TODO: define quorum), and `$inclusion` is an [RFC 6962 inclusion proof](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) encoded as a bytestring type.
+
+We leave out of scope how the caller authenticates themselves to the Log. This MAY be done via cookies, bearer tokens, etc.
+
+#### Get storage URL
+
+The `$base/storage` endpoint accepts GET requests and returns a 301 redirect to the URL that will be used for all tile queries.
+
+#### Storage queries
+
+The URL returned by `$base/storage` MUST expose the [tlog tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md) API. Recall, this includes the endpoints `$storage/checkpoint`, `$storage/tile/...`, and `$storage/tile/entries/...`.
+
+In addition, a checkpoint returned from `$storage/checkpoint` MUST have a `not_after` extension field that has not elapsed. 
+
+Finally, the storage endpoint MUST also serve the manifest and asset pointers. The GET endpoint `$storage/tile/aux/$N/$M` returns the manifest and asset pointer objects of the M-th item in the entry bundle given by `$storage/tile/entries/$N`, where `$N` is encoded in groupings of three digits as defined in tlog tiles, and `$M` is encoded as a decimal number. Specifically, this endpoint's response has type `application/cbor` and is of the form (using JSON notation for the CBOR object):
+```
+{
+    "manifest": $manifest,
+    "asset_pointers": $asset_pointers,
+}
+```
+where each value is a bytestring representing the serialized Site manifest object and serialized asset pointer object, respectively.
 
 ### Monitoring a Site
 
@@ -314,9 +349,9 @@ Currently, the version string in our checkpoint defines the protocol version for
 
 In addition, we have `.well-known` endpoints without versions, and the version of the Enrollment Server request being encoded in JSON rather than the MIME type. This doesn't feel super cohesive.
 
-### Checkpoint location is undefined
+### Checkpoint and committed integrity policy locations are not defined
 
-It’s not clear where the website should put its checkpoint when serving user requests. It should be in a standardized place so browsers know where to look for it. Maybe in a CSP header, maybe in a `<script>` tag with `name="integrity-page-manifest"`, as currently proposed in the WAICT integrity doc.
+When serving user requests, it’s not clear where the Site should put its checkpoint or the integrity policy committed to by the checkpoint, or the timestamp. They should be in a standardized place so browsers know where to look for it. This is further complicated by the fact that the committed integrity policy may just be a subset of the the full set of CSP headers, so the User can't just use the full set of CSP headers as the committed integrity policy.
 
 ### Forking a Log by picking different Witnesses
 
@@ -370,7 +405,10 @@ We now require the existence of a global Enrollment Server for all Sites, like [
 We previously punted on the specific format of the transparency (meta)data structure, and what precisely the Witness was signing. We are now using the tlog checkpoint format, and including it in a JSON object. This lets us piggyback on the tlog ecosystem of specs and deployments.
 
 **Made Log leaves store integrity policies, not manifests.**
-Previously, Logs only stored manifests. Site integrity is not governed by just manifests, though, but also its integrity policy. Since integrity policies contain the manifest hash, it suffices to just include the integrity policy in the Log.
+Previously, Logs only stored manifests. Site integrity is not governed by just manifests, though, but also its integrity policy. Since integrity policies contain the manifest hash, it suffices to just include the integrity policy in the Log. Now, manifests and asset pointers are stored as auxiliary data.
+
+**Log entries are now timestamped**
+It is probably convenient to monitors to be able to tell when an entry was added to a Log. They now have timestamps. It is yet unresolved how much trust should be placed in its accuracy, however.
 
 **Removed notion of Log ID and revision.**
 These weren't doing anything. A Log should be uniquely defined by its URL. This is enough, and it simplifies our document and API a lot. One thing becomes more lax, though: since the Log URL isn't assumed to have any structure, you cannot check that the Site's URL appears in the Log URL. So a third party could clone a Site and serve all the original Site's checkpoints as if it were their own. This is not really a problem though, in my opinion.
