@@ -21,6 +21,11 @@ We note that this document does NOT make any assumption about the structure or f
 
 Finally, the **WAICT integrity policy headers** are the Site's Content Seucrity Policy (CSP) headers that pertain to WAICT integrity. These headers contain the manifest hash as well as information on what types of assets will have integrity enforced (HTML, scripts, images, etc.), and what level of enforcement they are subject to (check-before-run, check-while-run, etc.).
 
+### Notation
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC2119](https://www.rfc-editor.org/rfc/rfc2119) [RFC8174](https://www.rfc-editor.org/rfc/rfc8174) when, and only when, they appear in all capitals, as shown here.
+
+We use `||` to denote concatenation of bytestrings.
 
 ## Construction overview
 
@@ -121,7 +126,7 @@ Content-Type: application/json
     "logs": [...]
 }
 ```
-where `$site_origin` is the origin of the enrolling Site, serialized as in [RFC 6454, section 6.1](https://www.rfc-editor.org/rfc/rfc6454.html#section-6.1) (i.e., `scheme://domain:port` form), and each entry of `logs` is a string containing a URL. Each URL MUST be of the form `$domain/waict-v1/$rest` where `$domain` is a domain conforming to [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.1), and `$rest` is the rest of the path. To unenroll from transparency, the Site simply leaves `logs` empty in its request. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation. All such additional fields MUST have a key which starts with "x-".
+where `$site_origin` is the origin of the enrolling Site, serialized as in [RFC 6454, section 6.1](https://www.rfc-editor.org/rfc/rfc6454.html#section-6.1) (i.e., `scheme://domain:port` form), and each entry of `logs` is a string containing a URL. To unenroll from transparency, the Site simply leaves `logs` empty in its request. The JSON object MAY contain additonal fields, whose interpretation is left to the Enrollment Server implementation. All such additional fields MUST have a key which starts with "x-".
 
 If the request is well-formed, the Enrollment Server responds with a _challenge_ string. This string MUST have at least 128 bits of entropy, MUST NOT contain any characters outside the base64url alphabet, and MUST NOT include the base64 padding character ("=").
 ```
@@ -163,7 +168,7 @@ When the Site serves its manifest and integrity policy to the User, it will also
 }
 ```
 where `checkpoint` contains the base64 encoding of the checkpoint (described below), and `inclusion` contains a base64 encoding of an [RFC 6962](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) Merkle inclusion proof, proving that the given integrity policy is the last leaf in the tree whose root appears in `checkpoint`. The JSON object MAY contain additonal fields, whose interpretation is left to the User implementation. All such additional fields MUST have a key which starts with "x-".
-(TODO: Versioning here is in the MIME type, but above it's in the JSON object itself. We should probably pick one.)
+(TODO: Consider using CBOR for tbundles)
 
 #### Checkpoint
 
@@ -213,7 +218,7 @@ Witnesses MUST follow the [tlog Witness API](https://github.com/C2SP/C2SP/blob/8
 
 ### What is stored in the Log
 
-An entry in a Log's Merkle tree is a timestamped integrity policy. Specifically, it is of the form `$timestamp || $policy`, where `$policy` is the serialized integrity policy and `$timestamp` is a big-endian encoding of the 64-bit Unix timestamp in seconds of the time the policy was added to the tree, and `||` denotes concatenation.
+An entry in a Log's Merkle tree is a timestamped integrity policy. Specifically, it is of the form `$timestamp || $policy`, where `$policy` is the serialized integrity policy and `$timestamp` is a big-endian encoding of the 64-bit Unix timestamp in seconds of the time the policy was added to the tree.
 
 (TODO: is there anything that ties this timestamp to reality? does this value need to be validated against something else? Maybe as a very basic test the user should check that the timestamp is less than the provided checkpoints `not_after`? Even better, it could check that it's before the Witness signature's timestamp.)
 
@@ -221,7 +226,7 @@ An entry in a Log's Merkle tree is a timestamped integrity policy. Specifically,
 
 Every Log is a Merkle tree whose leaf entries are integrity policies. Logs must also store auxiliary data for each entry, namely the manifest itself, and its associated **asset pointers**, a map of hashes to URLs so that any Auditor can find the original files referenced by hash in the manifest.
 
-The manifest file is defined in the WAICT integrity spec, so we need only define the asset pointers. This is a JSON object whose keys are zero-padded hex-encoded hashes (same as those that appear in the manifest), and whose values are URLs. For example, an asset pointer object may look like:
+The manifest file is defined in the WAICT integrity spec, so we need only define the asset pointers. This is a JSON object whose keys are hashes encoded in hex and zero-padded to the digest size, and whose values are URLs. For example, an asset pointer object may look like:
 ```json
 {
 "81db308d0df59b74d4a9bd25c546f25ec0fdb15a8d6d530c07a89344ae8eeb02": "https://s3.aws.com/blob1",
@@ -257,7 +262,7 @@ The response has content type `application/cbor`, and contains the CBOR object (
     "inclusion": $inclusion,
 }
 ```
-where `$timestamp` is the current time, encoded as a big-endian 64-bit Unix timestamp, `$checkpoint` is a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md) cosigned by a quorum of Witnesses (TODO: define quorum), and `$inclusion` is an [RFC 6962 inclusion proof](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) encoded as a bytestring type.
+where `$timestamp` is the current time, encoded as a big-endian 64-bit Unix timestamp in seconds, `$checkpoint` is a [tlog checkpoint](https://github.com/C2SP/C2SP/blob/main/tlog-checkpoint.md) cosigned by a quorum of Witnesses (TODO: define quorum), and `$inclusion` is an [RFC 6962 inclusion proof](https://www.rfc-editor.org/rfc/rfc6962.html#section-2.1.1) encoded as a bytestring type.
 
 We leave out of scope how the caller authenticates themselves to the Log. This MAY be done via cookies, bearer tokens, etc.
 
@@ -345,9 +350,9 @@ Currently, a Site could serve any sequence of checkpoints to a User over time, s
 
 ### Where does versioning go?
 
-Currently, the version string in our checkpoint defines the protocol version for the entire checkpoint. **This forces every Witness to use the same version.** If some Witnesses are slow to upgrade, this might be an issue. This might be a non-issue, since we don’t expect there to be many Witnesses, and they can all expose 2 signing endpoints during transition. So at some point, it should be possible to go from all-v1 to all-v2 without any downtime.
+Versioning is kind of all over the place. The tbundle version is given via MIME type, while the `.well-known` endpoints without versions, and the version of the Enrollment Server request being encoded in JSON rather than the MIME type. This isn't super cohesive.
 
-In addition, we have `.well-known` endpoints without versions, and the version of the Enrollment Server request being encoded in JSON rather than the MIME type. This doesn't feel super cohesive.
+Fwiw the tbundle version being in the MIME type is probably a good thing. It means that a Site could serve multiple tbundles with different versions, and let the client pick the one they support. This is good for transitionary periods.
 
 ### Checkpoint and committed integrity policy locations are not defined
 
