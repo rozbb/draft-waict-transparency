@@ -135,6 +135,7 @@ Content-Type: plain/text
 
 DrqKo-kHVw2FZURaLWayeyir5yiOaUVqZjboTmVbG1I
 ```
+(TODO: Is a challenge string really necessary? What would go wrong if `/set-site-logs` simply got a Site as a GET parameter and queried a well-known path to get the logs? No interaction needed. Also the Site can unenroll by just returning an empty string or 404 on the well-known path.)
 
 #### Completing enrollment
 
@@ -435,7 +436,7 @@ These weren't doing anything. A Log should be uniquely defined by its URL. This 
 
 **Removed Witness querying API.** The entire point of a Witness ecosystem is to have high-trust, low-overhead machines that will sign things for you. By making them have to respond to queries, we drastically increase the difficulty of deployment. To get around the forking issues that we previously used querying to resolve, we embed more info in the TLS leaf certificate, and propose (in Open Problems) to require a strict majority of Witnesses in order for Monitors to accept a checkpoint.
 
-**Removed tlog-style checkpoint format.** We previously said the format was loose anyway, and it became cumbersome to represent things in the tlog style. In particular, since not_after cannot be included in the first line (since this is supposed to be a unique Log identifier), it was necessary to define a second data structure which contains metadata that’s hashed into the final leaf hash. I think it makes most sense to just show this all in one data structure and define how hashes and signatures are computed. Thus, we introduced committed_metadata and t_hash.
+**Removed tlog-style checkpoint format.** We previously said the format was loose anyway, and it became cumbersome to represent things in the tlog style. In particular, since not\_after cannot be included in the first line (since this is supposed to be a unique Log identifier), it was necessary to define a second data structure which contains metadata that’s hashed into the final leaf hash. I think it makes most sense to just show this all in one data structure and define how hashes and signatures are computed. Thus, we introduced committed\_metadata and t\_hash.
 
 **Added timestamp to signature.** This was just because that’s what tlog does. I’m not certain we need it, but it seems like something we might regret not having. I don’t feel strongly.
 
