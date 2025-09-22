@@ -2,21 +2,19 @@
 
 # Introduction
 
-This document is a supplement to the [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZHXkWRFvKGEifdcMthUfv-LxIbg6bx2o/edit?tab=t.0#heading=h.hqduv7qhbp3k) specification. It proposes a set of use cases for web application transparency, some protocols that attempt to achieve this, and open problems which need to be resolved.
+This document describes a transparency system for web resources. It enables clients fetching web resources, identified by a URL, to be assured that the received web resource has been publicly logged. It also enables website operators (and others) to enumerate the history of a web resource and observe when it changes.
 
-We note that this document does NOT make any assumption about the structure or functioning of web application integrity. We take as a given that there is a unique 32-byte sequence which uniquely identifies the set of assets that a website cares to protect (in practice, the hash of something(s)).
+The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZHXkWRFvKGEifdcMthUfv-LxIbg6bx2o/edit?tab=t.0#heading=h.hqduv7qhbp3k), Web Application Integrity, Consistency and Transparency, which aims to bring stronger transparency and integrity properties to applications delivered over the web in order to support properties like end-to-end encrypted messaging.
 
 # Glossary
 
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
-* A **manifest** is a file that commits to the content served by the site.
+* A **Web Resource** is a file identified by a URL whose contents are committed to by a cryptographic hash.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
-* The **Enrollment Server** is the service that a Site registers with to announce that they have enabled transparency. There is a single global Enrollment Server.
-* The **Log Provider** is the entity that runs a Log. The Log Provider MAY be distinct from the entity that runs the Site. Depending on the Site, the Log Provider may be expected to have high uptime. **A Log Provider is identified by its domain.**
 * The **Asset Host** is a party chosen by a site to be responsible for storing the larger assets associated with transparency. This includes the integrity manifest, asset pointer file, and assets themselves.
-* A **Witness** ensures that the Enrollment Dictionary is well-behaved, i.e., only makes updates that are allowed by the specification. It receives the new dictionary root and a proof of correct transition. On success, the witness signs the new root.
+* A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to. 
+* A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives the new dictionary root and a proof of correct transition. On success, the witness signs the new root.
 
-Finally, the **WAICT integrity policy headers** are the Site's Content Security Policy (CSP) headers that pertain to WAICT integrity. These headers contain the manifest hash as well as information on what types of assets will have integrity enforced (HTML, scripts, images, etc.), and what level of enforcement they are subject to (check-before-run, check-while-run, etc.).
 
 ## Notation
 
@@ -30,11 +28,11 @@ We use `||` to denote concatenation of bytestrings.
 
 (TODO: Include rough estimates for Log storage requirements (and witness if required))
 
-# The Enrollment Dictionary
+# The Transparency Service
 
-The top-level data structure for transparency is the Enrollment Dictionary. This is a [KT Prefix Tree](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree), i.e., a tree where each leaf's position is determined by its _key_, and the contents of the leaf is that key's _value_.
+The top-level data structure for transparency is the Transparency Service. This is a [KT Prefix Tree](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree), i.e., a tree where each leaf's position is determined by its _key_, and the contents of the leaf is that key's _value_.
 
-The Enrollment Dictionary is a KT Prefix Tree where the keys are the domains of the websites enrolling in transparency, and the values are of the form:
+The Transparency Service is a KT Prefix Tree where the keys are the domains of the websites enrolling in transparency, and the values are of the form:
 ```
 struct {
     u8 epoch_created[32],
@@ -60,7 +58,7 @@ A witness is a stateful signer. It maintains a full copy of the prefix tree that
 
 ### Request signature
 
-The enrollment dictionary requests a signature on an updated prefix tree via `POST $witness/req-sig`. The body contains two components:
+The transparency service requests a signature on an updated prefix tree via `POST $witness/req-sig`. The body contains two components:
 
 1. Every new prefix tree entry
 1. The signed root
@@ -87,15 +85,15 @@ struct {
     u8 note[1..2^24],
 } SigReq
 ```
-where `updated_leaves` does not have any duplicate keys, and `note` is a _signed note_ per the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md), signed by the enrollment server with timestamped Ed25519. The text of the signed note is
+where `updated_leaves` does not have any duplicate keys, and `note` is a _signed note_ per the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md), signed by the transparency service with timestamped Ed25519. The text of the signed note is
 ```
-$enrollment_dict_domain/waict-v1/prefix-tree
+$transparency_service_domain/waict-v1/prefix-tree
 <base64_root>
 ```
-To validate, the witness:
+(TODO: pick different ID than `waict`) To validate, the witness:
 
 1. Checks that `updated_leaves` has no duplicates`
-1. Loads the last known prefix tree state belonging to the enrollment dictionary
+1. Loads the last known prefix tree state belonging to the transparency service
 1. Updates all leaves according to `updated_leaves`. The witness:
     1. For each `key`, computes the new chain hash `ch` from `added_item_hash`. If it is not a tombstone, it
         1. Ensures `ch` equals the entry's `site_hist_hash`
@@ -105,16 +103,16 @@ To validate, the witness:
         1. Ensures `expiry` is in the future, and not too far in the future
     1. If the leaf is a tombstone, it deletes the leaf
 1. Recomputes the prefix tree root
-1. Verifies the enrollment dictionary's signature on the updated prefix root, aborting on failure
+1. Verifies the transparency service's signature on the updated prefix root, aborting on failure
 1. Adds its own signature to the signed note
 1. Updates its copy of the prefix tree
 1. Returns the new signed note
 
-Note: if an enrollment dictionary becomes unable to produce new proofs, it will be impossible for it to get new signatures. So in the case of data loss or intentional tampering, an enrollment dictionary is forced to negotiate with witnesses to have them accept a new tree.
+Note: if a transparency service becomes unable to produce new proofs, it will be impossible for it to get new signatures. So in the case of data loss or intentional tampering, a transparency service is forced to negotiate with witnesses to have them accept a new tree.
 
 (TODO: any other endpoint a witness should provide? registration should probably be with a human in the loop)
 
-## Enrollment Dictionary API
+## Transparency Service API
 
 ### Enroll
 
@@ -185,9 +183,9 @@ To request unenrollment, the site serves
 }
 ```
 
-The site then invokes a GET query on `https://$enrollment_dict/enroll` with GET parameter `site` set to the base64url encoding of `https://$domain`.
+The site then invokes a GET query on `https://$transparency_service_domain/enroll` with GET parameter `site` set to the base64url encoding of `https://$domain`.
 
-The enrollment dictionary fetches the file. If the enrollment dictionary does not already have the domain, it:
+The transparency service fetches the file. If the transparency service does not already have the domain, it:
 
 1 Creates a leaf with prefix given by `$domain`
 1. Sets the value of the leaf equal to an `Entry`, with `site_hist_hash`, `site_hist_size`, `asset_host_url`, `expiry`, and `enforce` equal to the given values, and with all extension keys set to the given keys, and `value_hash` set to `SHA256(value)` for each entry. It also sets the `time_created` value to the current time in Unix seconds.
@@ -203,9 +201,9 @@ struct {
   Signature sigs[16],
 } WaictEnrollmentResponse
 ```
-The enrollment dictionary MAY batch additions to the tree. Batch updates are discussed in TODO.
+The transparency service MAY batch additions to the tree. Batch updates are discussed in TODO.
 
-If the enrollment dictionary already has this domain, then it checks if the file is the special unenrollment form and deletes the corresponding leaf if so. If it is not the special unenrollment form, then the enrollment dictionary updates its `asset_host` and `expiry` fields with the provided ones. It also updates the `enforce` field with the provided one if the provided one is `true`. (TODO: and what about extensions? shouldn't updates in those be transparent?)
+If the transparency service already has this domain, then it checks if the file is the special unenrollment form and deletes the corresponding leaf if so. If it is not the special unenrollment form, then the transparency service updates its `asset_host` and `expiry` fields with the provided ones. It also updates the `enforce` field with the provided one if the provided one is `true`. (TODO: and what about extensions? shouldn't updates in those be transparent?)
 
 Note: the `time_created` value in a dictionary entry MUST NOT change for as long as that entry exists. The only time it may change is on deletion of that leaf.
 
@@ -282,11 +280,11 @@ To verify a single extension, given its key and value hash, the user:
 
 # Data APIs
 
-The enrollment dictionary hosts mostly hashes, but auditors need to be able to fetch the actual assets the site served. We now describe how an auditor does this. 
+The transparency service hosts mostly hashes, but auditors need to be able to fetch the actual assets the site served. We now describe how an auditor does this. 
 
-## Enrollment dictionary
+## Transparency Service
 
-The enrollment dictionary must provide a way of fetching entries. First, the auditor requests the `Entry` corresponding to `$domain` by performing an HTTP GET on `$enrollment_server/get-leaf?domain=$domain`. The server returns an `application/octet-stream` containing an `Entry` with an inclusion proof with the key equal to the given domain:
+The transparency service must provide a way of fetching entries. First, the auditor requests the `Entry` corresponding to `$domain` by performing an HTTP GET on `$transparency_service_domain/get-leaf?domain=$domain`. The server returns an `application/octet-stream` containing an `Entry` with an inclusion proof with the key equal to the given domain:
 ```
 struct {
     Entry leaf,
@@ -308,9 +306,9 @@ GET `$url/chain-tile/<N>[.p/<W>]`
 
 The `.p/<W>` suffix is only present for partial tiles, defined below. <W> is the width of the tile, a decimal ASCII integer between 1 and 255, with no additional leading zeroes.
 
-The enrollment dictionary MUST store a tile of an enrolled dictionary for at least one year beyond the youngest entry in the tile. If the tile is partial, then the enrollment dictionary MUST NOT delete it until the site unenrolled.
+The transparency service MUST store a tile of an enrolled dictionary for at least one year beyond the youngest entry in the tile. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
-An enrollment dictionary MAY prune sites for inactivity. That is, it MAY unenroll them after a year of no updates.
+A transparency service MAY prune sites for inactivity. That is, it MAY unenroll them after a year of no updates.
 
 ### Manifest
 
@@ -361,11 +359,11 @@ Transparency can be enabled two different ways. One easy to revert and one hard 
 
 A site can enable transparency via the `WAICT-Transparency` header described above. The `expires` field tells the client to expect transparency information from the website until the provided time (exclusive). The client MAY then behave as if transparency were enabled, i.e., reading the `Integrity-Policy` header and so forth.
 
-## Enrollment dictionary signaling
+## Transparency service signaling
 
-Mere presence in the enrollment dictionary does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
+Mere presence in the transparency service dictionary does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
 
-A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. An enrollment dictionary MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
+A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. A transparency service MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
 
 ## Serving the inclusion data
 
@@ -379,4 +377,4 @@ struct {
 
 # Monitoring a Site
 
-A site MAY monitor its entry in an enrollment dictionary by querying `get-leaf`. If its `epoch_created` is unchanged from the last check, then the monitor knows the domain was not unenrolled since last check. The monitor can then also check if the history size increased since the last check.
+A site MAY monitor its entry in a transparency service dictionary by querying `get-leaf`. If its `epoch_created` is unchanged from the last check, then the monitor knows the domain was not unenrolled since last check. The monitor can then also check if the history size increased since the last check.
