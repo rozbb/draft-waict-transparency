@@ -35,19 +35,33 @@ The top-level data structure for transparency is the Transparency Service. This 
 The Transparency Service is a KT Prefix Tree where the keys are the domains of the websites enrolling in transparency, and the values are of the form:
 ```
 struct {
+  u8 key[16],
+  u8 value_hash[32],
+} Extension
+
+struct {
     u8 epoch_created[32],
-    u8 chain_hash[32],
+    u8 resource_hash[32],
     int site_hist_size,
     u8 asset_host_url[256],
     int expiry,
     bool enforce,
     Extension extensions[16],
+} ActiveEntry;
+
+struct {
+    u8 epoch_created[32],
+} TombstoneEntry; (TODO: figure out where to store expiry)
+
+enum {
+    ActiveEntry active_entry,
+    TombstoneEntry tombstone_entry,
 } Entry;
 
 struct {
-  u8 key[16],
-  u8 value_hash[32],
-} Extension
+    Entry entry,
+    u8 chain_hash[32],
+} EntryWithCtx;
 ```
 That is, each leaf stores a hash representing the full history of the site at the given domain, as well as a URL to an asset host that can return. It also marks the time of creation by storing in `epoch_created` the hash of the prefix tree root preceding this one. (TODO: make Entry an enum that can also be a tombstone)
 
@@ -57,7 +71,7 @@ That is, each leaf stores a hash representing the full history of the site at th
 
 To enroll via HTTPS, a site first exposes an HTTPS endpoint `https://$domain/.well-known/waict-enroll` containing all the information the transparency service needs to
 
-with MIME type `application/json` with the schema (TODO: should history size be in here too?):
+with MIME type `application/json` with the schema (TODO: should history size be in here too? what is the initial chain hash for?):
 ```json
 {
   "title": "Enrollment Data",
@@ -129,24 +143,25 @@ The site then invokes a GET query on `https://$transparency_service_domain/enrol
 The transparency service fetches the file. If the transparency service does not already have the domain, it:
 
 1 Creates a leaf with prefix given by `$domain`
-1. Sets the value of the leaf equal to an `Entry`, with `chain_hash`, `site_hist_size`, `asset_host_url`, `expiry`, and `enforce` equal to the given values, and with all extension keys set to the given keys, and `value_hash` set to `SHA256(value)` for each entry. It also sets the `time_created` value to the current time in Unix seconds. (TODO: settle on epoch-created vs time-created)
+1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `site_hist_size`, `asset_host_url`, `expiry`, and `enforce` equal to the given values, and with all extension keys set to the given keys, and `value_hash` set to `SHA256(0x04 || value)` for each entry. It also sets the `epoch_created` value to the current prefix tree root. (TODO: settle on epoch-created vs time-created)
 1. Computes a new prefix root given the new leaf
 1. Gets cosignatures on the prefix root
 1. Computes an inclusion proof of the leaf in the new prefix tree
 1. Returns a struct of the form
 ```
 struct {
-  u8 leaf_hash[32],
-  u8 prefix_root[32],
+  EntryWithCtxt entry,
   PrefixInclusionProof inc_proof,
-  Signature sigs[16],
+  u8 signed_prefix[1..2^24]
 } WaictEnrollmentResponse
 ```
-The transparency service MAY batch additions to the tree. Batch updates are discussed in TODO.
+where `signed_prefix` is a signed note.
+
+(TODO: consider how to deal with longer latency on enrollments. Should you get a timestamp for when the next epoch lands, or should your connection just hang until it comes)
 
 If the transparency service already has this domain, then it checks if the file is the special unenrollment form and deletes the corresponding leaf if so. If it is not the special unenrollment form, then the transparency service updates its `asset_host` and `expiry` fields with the provided ones. It also updates the `enforce` field with the provided one if the provided one is `true`. (TODO: and what about extensions? shouldn't updates in those be transparent?)
 
-Note: the `time_created` value in a dictionary entry MUST NOT change for as long as that entry exists. The only time it may change is on deletion of that leaf.
+Note: the `epoch_created` value in a dictionary entry MUST NOT change for as long as that entry exists. The only time it may change is on deletion of that leaf.
 
 ### Append to chain
 
@@ -162,16 +177,9 @@ The `POST /append` endpoint takes a resource value and appends its hash to that 
 ### Get Leaf
 
 The transparency service must provide a way of fetching entries in the prefix tree. Any party can fetch this information via `GET $transparency_service_domain/get-leaf`
-(TODO: add inclusion proof to this)
 
 * Parameter `domain`: The domain of the site whose leaf is desired
-* Return: `GetLeafResp`, a structure containin an `Entry` and an inclusion proof with the key equal to `domain`:
-```
-struct {
-    Entry leaf,
-    PrefixInclusion inc,
-} GetLeafResp;
-```
+* Return: A `WaictInclusionProof` for the given domain
 
 ### Update leaf metadata
 
@@ -190,44 +198,41 @@ The transparency service requests a signature on an updated prefix tree via `POS
 
 Concretely, the payload is an `application/octet-stream` with the structure
 ```
-struct {
-    u8 key[32],
-    Entry value,
-    u8 added_item_hash[32],
-} Leaf;
+struct EntryDelete;
 
-struct Tombstone {
-    u8 key[32],
-}
-
-enum LeafOrTombstone {
-    Leaf leaf,
-    Tombstone tombstone,
-}
+enum {
+    ActiveEntry entry_update,
+    EntryDelete entry_delete,
+} EntryOp;
 
 struct {
-    LeafOrTombstone updated_leaves[1..2^16],
+    u8 key[32],
+    EntryOp op,
+} NewEntry;
+
+struct {
+    NewEntry new_entries[1..2^16],
     u8 note[1..2^24],
-} SigReq
+} SigReq;
 ```
-where `updated_leaves` does not have any duplicate keys, and `note` is a _signed note_ per the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md), signed by the transparency service with timestamped Ed25519. The text of the signed note is
+where `new_entries` does not have any duplicate keys, and `note` is a _signed note_ per the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md), signed by the transparency service with timestamped Ed25519. The text of the signed note is
 ```
 $transparency_service_domain/waict-v1/prefix-tree
 <base64_root>
 ```
 (TODO: pick different ID than `waict`) To validate, the witness:
 
-1. Checks that `updated_leaves` has no duplicates`
+1. Checks that `new_entries` has no duplicates`
 1. Loads the last known prefix tree state belonging to the transparency service
-1. Updates all leaves according to `updated_leaves`. The witness:
-    1. For each `key`, computes the new chain hash `ch` from `added_item_hash`. If it is not a tombstone, it
-        1. Ensures `ch` equals the entry's `chain_hash`
+1. Updates all entries. For each element of `new_entries`, the witness:
+    1. If it is not an `EntryDelete`,
         1. Ensures `enforce` only moves from false to true, or false to false
         1. Ensures `site_hist_size` increases by 1 (TODO: should we permit proofs where a site adds more than one entry?)
         1. Ensures `epoch_created` is unchanged
         1. Ensures `expiry` is in the future, and not too far in the future
-    1. If the leaf is a tombstone, it deletes the leaf
-1. Recomputes the prefix tree root
+        1. Computes the new chain hash of the entry using its stored old chain hash and the given entry's `resource_hash`.
+    1. If it is an `EntryDelete`, sets the entry to a `TombstoneEntry` with the current epoch as `epoch_created`.
+1. Computes the new prefix tree root using the given entries and computed chain hashes
 1. Verifies the transparency service's signature on the updated prefix root, aborting on failure
 1. Adds its own signature to the signed note
 1. Updates its copy of the prefix tree
@@ -279,11 +284,10 @@ If a URL is used, its response MUST have the MIME type `application/octet-stream
 The URL given in the `inclusion` field in the `WAICT-Transparency` header returns a proof showing that the hash of the `Integrity-Policy` header is the latest value in the site history at the leaf given by the site's domain, followed by a proof that the leaf is included in a signed prefix tree. Concretely, the proof structure is as follows
 ```
 struct {
-  u8 sibling_hash[32],
-  Entry leaf,
+  EntryWithCtxt entry,
   PrefixInclusionProof inc_proof,
-  u8 signed_prefix_root[1..2^24],
-} WaictInclusionProof
+  u8 signed_prefix[1..2^24]
+} WaictInclusionProof;
 ```
 where `signed_prefix_root` is a signed note of the form described above. The endpoint responds to HTTP GET requests with the above serialized proof, using MIME type `application/octet-string`.
 
@@ -389,10 +393,4 @@ A site can opt into this stronger enforcement by following the enrollment proced
 
 ## Serving the inclusion data
 
-After the presence of transparency is signalled, the user has to verify the transparency. The manifest bundle contains a base64 encoding of the inclusion of the manifest hash into the prefix tree, followed by a signed note of the prefix root. Concretely, this is:
-```
-struct {
-    PrefixInclusion inc,
-    u8 signed_note[1..2^24]
-} TProof
-```
+After the presence of transparency is signalled, the user has to verify the transparency. The manifest bundle contains a base64 encoding of the `WaictInclusionProof` of the given resource.
