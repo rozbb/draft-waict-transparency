@@ -16,11 +16,19 @@ The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZ
 * A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives the new dictionary root and a proof of correct transition. On success, the witness signs the new root.
 
 
-## Notation
+## Notation and dependencies
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC2119](https://www.rfc-editor.org/rfc/rfc2119) [RFC8174](https://www.rfc-editor.org/rfc/rfc8174) when, and only when, they appear in all capitals, as shown here.
 
 We use `||` to denote concatenation of bytestrings.
+
+We use the Prefix Tree data structure from the [key transparency draft specification](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree). We also use the `PrefixProof` structure for proofs of inclusion and non-inclusion, as well as the structure's associated verification algorithm.
+
+We use the Signed Note data structure from the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md). We use the term "cosignature" as in the standard, to refer to a signature on a signed note.
+
+We use the JSON Schema langauge from the [JSON Schema standard](https://json-schema.org/draft/2020-12/json-schema-core) to specify the structure of JSON objects. We also use the associated [validation standard](https://json-schema.org/draft/2020-12/json-schema-validation#section-6.3) for additional keywords such as `maxLength` or `pattern`.
+
+We use the base64 encoding algorithms described in [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648.html). Specifically we use the standard "base64" encoding and the URL-safe "base64url" encoding.
 
 # Construction overview
 
@@ -30,37 +38,37 @@ We use `||` to denote concatenation of bytestrings.
 
 # The Transparency Service
 
-The top-level data structure for transparency is the Transparency Service. This is a [KT Prefix Tree](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree), i.e., a tree where each leaf's position is determined by its _key_, and the contents of the leaf is that key's _value_.
+The top-level data structure for transparency is the Transparency Service. This is a , i.e., a tree where each leaf's position is determined by its _key_, and the contents of the leaf is that key's _value_.
 
-The Transparency Service is a KT Prefix Tree where the keys are the domains of the websites enrolling in transparency, and the values are of the form:
+The Transparency Service is a prefix tree where the keys are the domains of the websites enrolling in transparency, and the values are of the form:
 ```
 struct {
-  u8 key[16],
-  u8 value_hash[32],
-} Extension
+  uint8 key[16],
+  uint8 value_hash[32],
+} Extension;
 
 struct {
-    u8 epoch_created[32],
-    u8 resource_hash[32],
-    int site_hist_size,
-    u8 asset_host_url[256],
-    int expiry,
-    bool enforce,
-    Extension extensions[16],
+    uint8 epoch_created[32];
+    uint8 resource_hash[32];
+    uint64 site_hist_size;
+    uint8 asset_host_url<1..2^8-1>;
+    uint64 expiry;
+    bool enforce;
+    Extension extensions<0..sizeof(Extension)*16-1>;
 } ActiveEntry;
 
 struct {
-    u8 epoch_created[32],
+    uint8 epoch_created[32];
 } TombstoneEntry; (TODO: figure out where to store expiry)
 
 enum {
-    ActiveEntry active_entry,
-    TombstoneEntry tombstone_entry,
+    ActiveEntry active_entry;
+    TombstoneEntry tombstone_entry;
 } Entry;
 
 struct {
-    Entry entry,
-    u8 chain_hash[32],
+    Entry entry;
+    uint8 chain_hash[32];
 } EntryWithCtx;
 ```
 That is, each leaf stores a hash representing the full history of the site at the given domain, as well as a URL to an asset host that can return. It also marks the time of creation by storing in `epoch_created` the hash of the prefix tree root preceding this one. (TODO: make Entry an enum that can also be a tombstone)
@@ -94,12 +102,12 @@ with MIME type `application/json` with the schema (TODO: should history size be 
     },
     "enforce": {
       "type": "boolean",
-      "$coment": "Whether this site has transparency enforced by all clients (until the expiry)."
+      "$comment": "Whether this site has transparency enforced by all clients (until the expiry)."
     },
     "expiry": {
       "type": "integer",
       "minimum": 0,
-      "$coment": "The time, in Unix seconds, that this enrollment expires"
+      "$comment": "The time, in Unix seconds, that this enrollment expires"
     },
     "extensions": {
       "type": "array",
@@ -150,9 +158,9 @@ The transparency service fetches the file. If the transparency service does not 
 1. Returns a struct of the form
 ```
 struct {
-  EntryWithCtxt entry,
-  PrefixInclusionProof inc_proof,
-  u8 signed_prefix[1..2^24]
+  EntryWithCtxt entry;
+  PrefixProof inc_proof;
+  uint8 signed_prefix<1..2^24-1>;
 } WaictEnrollmentResponse
 ```
 where `signed_prefix` is a signed note.
@@ -194,33 +202,34 @@ A witness is a stateful signer. It maintains a full copy of the prefix tree that
 The transparency service requests a signature on an updated prefix tree via `POST $witness/req-sig`. The body contains two components:
 
 1. Every new prefix tree entry
-1. The signed root
-
-Concretely, the payload is an `application/octet-stream` with the structure
-```
-struct EntryDelete;
-
-enum {
-    ActiveEntry entry_update,
-    EntryDelete entry_delete,
-} EntryOp;
-
-struct {
-    u8 key[32],
-    EntryOp op,
-} NewEntry;
-
-struct {
-    NewEntry new_entries[1..2^16],
-    u8 note[1..2^24],
-} SigReq;
-```
-where `new_entries` does not have any duplicate keys, and `note` is a _signed note_ per the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md), signed by the transparency service with timestamped Ed25519. The text of the signed note is
+1. The root as a signed note (variant 0x04, i.e., timestamped ed25519 witness cosignatures), signed with the transparency service's public key. The signed note text is of the form
 ```
 $transparency_service_domain/waict-v1/prefix-tree
 <base64_root>
 ```
-(TODO: pick different ID than `waict`) To validate, the witness:
+(TODO: pick different ID than `waict`)
+
+The request payload `SigReq` is encoded in an `application/octet-stream` with the structure:
+```
+struct EntryDelete;
+
+enum {
+    ActiveEntry entry_update;
+    EntryDelete entry_delete;
+} EntryOp;
+
+struct {
+    uint8 key[32];
+    EntryOp op;
+} NewEntry;
+
+struct {
+    NewEntry new_entries<1..2^16-1>;
+    uint8 note<1..2^24-1>,
+} SigReq;
+```
+
+To validate, the witness:
 
 1. Checks that `new_entries` has no duplicates`
 1. Loads the last known prefix tree state belonging to the transparency service
@@ -250,7 +259,7 @@ In order to convey transparency information to the user, the site must tell it w
 ```
 WAICT-Transparency: expires=<time>, inclusion=<url>, extensions=<url>
 ```
-where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a URL to a transparency inclusion proof, and `extensions` is a URL to the full list of extension values. (TODO: add an option to embed inclusion into the header if it's short enough)
+where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a URL to a transparency inclusion proof, and `extensions` is a URL to the full list of extension values. (TODO: add an option to embed inclusion into the header if it's short enough) (TODO: also add an option to embed a non-inclusion proof in a newer tree so that you can convince clients you disabled transparency)
 
 Note: The inclusion proof is dependent on the manifest and extensions. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
 
@@ -284,9 +293,9 @@ If a URL is used, its response MUST have the MIME type `application/octet-stream
 The URL given in the `inclusion` field in the `WAICT-Transparency` header returns a proof showing that the hash of the `Integrity-Policy` header is the latest value in the site history at the leaf given by the site's domain, followed by a proof that the leaf is included in a signed prefix tree. Concretely, the proof structure is as follows
 ```
 struct {
-  EntryWithCtxt entry,
-  PrefixInclusionProof inc_proof,
-  u8 signed_prefix[1..2^24]
+  EntryWithCtxt entry;
+  PrefixProof inc_proof;
+  uint8 signed_prefix<1..2^24>;
 } WaictInclusionProof;
 ```
 where `signed_prefix_root` is a signed note of the form described above. The endpoint responds to HTTP GET requests with the above serialized proof, using MIME type `application/octet-string`.
