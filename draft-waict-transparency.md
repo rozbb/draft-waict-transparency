@@ -12,8 +12,8 @@ The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZ
 * A **Web Resource** is a file identified by a URL whose contents are committed to by a cryptographic hash.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * The **Asset Host** is a party chosen by a site to be responsible for storing the larger assets associated with transparency. This includes the integrity manifest, asset pointer file, and assets themselves.
-* A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to.
-* A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives the new dictionary root and a proof of correct transition. On success, the witness signs the new root.
+* A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to. It maintains a mapping of site to transparency information.
+* A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives a proof of that the transparency service has correctly transitioned the values in its map. On success, the witness signs a representation of the map.
 
 
 ## Notation and Dependencies
@@ -233,7 +233,7 @@ The append endpoint takes a resource value and appends its hash to that leaf's c
 
 The `.p/<W>` suffix is only present for partial tiles, defined below. <W> is the width of the tile, a decimal ASCII integer between 1 and 255, with no additional leading zeroes.
 
-The transparency service MUST store a tile of an enrolled dictionary for at least one year beyond the youngest entry in the tile. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
+The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
 A transparency service MAY prune sites for inactivity. That is, it MAY unenroll them after a year of no updates.
 
@@ -243,7 +243,7 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 * Method: GET
 * Returns: An `application/octet-stream` containing the `N`-th chain hash (0-indexed).
 
-`<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled dictionary for at least one year.
+`<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled site for at least one year.
 
 (TODO: should we batch manifests like tiles? they can get big)
 
@@ -396,6 +396,6 @@ A site can enable transparency via the `WAICT-Transparency` header described abo
 
 ## Transparency service signaling
 
-Mere presence in the transparency service dictionary does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
+Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
 
 A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. A transparency service MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
