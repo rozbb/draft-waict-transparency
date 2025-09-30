@@ -323,7 +323,7 @@ Note: The inclusion proof depends on the manifest. To ensure that all data is co
 
 A site can enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **preload list**, a list of sites that are preloaded on the browser. If a site is on the preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
 
-In this setting, browser vendors maintain the preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning).
+In this setting, browser vendors maintain the preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
 
 ## Extension Values with Cooldown
 
