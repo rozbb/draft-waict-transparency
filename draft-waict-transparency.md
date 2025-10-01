@@ -331,10 +331,12 @@ Sites may wish to have associated metadata that is subject to certain update rul
 
 To define a cooldown mechanism for a site extension, the site maintainer needs to make two updates every time it updates an extension called, say, `foobar`:
 
-1. It updates the extension `foobar` with the value that it desires. It receives the inclusion proof of the manifest in the new prefix tree.
+1. It updates the extension `foobar` with the value that it desires (to delete, the value should be set to the empty string, essentially as a tombstone). It receives the inclusion proof of the manifest in the new prefix tree.
 1. It updates the extension `foobar-inclusion` with the inclusion proof above.
 
 Now any client can enforce the cooldown property by simply verifying `foobar-inclusion` and checking how old its timestamp is. If it verifies and the timestamp is sufficiently old, then it uses the value in `foobar`. Otherwise, it errors and uses whatever valid stored value it has.
+
+Of course, clients still have to know to expect the extension (otherwise a site can just delete the extension without cooldown). So any extension ecosystem will have to maintain its own preload list. If a site wants to disable the extension, they request removal from the preload list. Until then, they serve tombstone values.
 
 (TODO: the details above aren't worked out. Where are these extensions stored? How do you check an old inclusion proof without providing the entire old manifest + extensions?)
 
