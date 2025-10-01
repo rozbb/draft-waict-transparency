@@ -45,7 +45,6 @@ The Transparency Service maintains a mapping of domains to resource hashes (and 
 1. The hash of the resource
 1. The size of the resource history for the domain
 1. A URL to the asset host associated to the domain
-1. The _expiry_, i.e., the Unix timestamp, in seconds, denoting the time after which this entry becomes invalid
 
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
@@ -54,12 +53,11 @@ struct {
     uint8 resource_hash[32];
     uint64 chain_size; (TODO: think whether this is necessary)
     uint8 asset_host_url<1..2^8-1>; (TODO permit many URLs)
-    uint64 expiry;
 } ActiveEntry;
 
 struct {
     uint64 time_created;
-} TombstoneEntry; (TODO: figure out where to store expiry)
+} TombstoneEntry;
 
 enum {
     ActiveEntry active_entry;
@@ -113,14 +111,9 @@ The enrolling site will return a response containing all the information the tra
       "type": "integer",
       "minimum": 0,
       "$comment": "Initial size of the site's history chain"
-    },
-    "expiry": {
-      "type": "integer",
-      "minimum": 0,
-      "$comment": "The time, in Unix seconds, that this enrollment expires"
-    },
+    }
   },
-  "required": [ "asset_host", "initial_chain_hash", "expiry" ]
+  "required": [ "asset_host", "initial_chain_hash" ]
   }
 }
 ```
@@ -130,14 +123,13 @@ If the site intends to unenroll, the site serves the special value:
   "asset_host": "",
   "initial_chain_hash": "",
   "initial_chain_size": 0,
-  "expiry": 0,
 }
 ```
 
 After the transparency service makes the GET request, if it does not already have the domain, it:
 
 1 Creates a leaf with key `$site`
-1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `chain_size`, `asset_host_url`, and `expiry` equal to the given values. It also sets the `time_created` value to the current Unix time in seconds.
+1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `chain_size`, and `asset_host_url` equal to the given values. It also sets the `time_created` value to the current Unix time in seconds.
 1. Computes a new prefix root given the new leaf
 1. Gets witness cosignatures on the prefix root (via the Witness API described below)
 1. Computes an inclusion proof of the leaf in the new prefix tree
@@ -159,7 +151,7 @@ $tdomain/waict-v1/prefix-tree
 
 (TODO: this doesn't give the site an easy way to interface with the transparency service going forward. If the site wants to call `/append`, what authentication mechanism does it use? How do we ensure it is the same person that registered the site? One thought is to make this process challenge-response like ACME. That is, have `$tdomain/begin-enroll` responds with two values, `chal` and `api-key`. The site puts `chal` in its `/.well-known`, and it saves the `api-key`. Then when `$tdomain/end-enroll?site=$site` is called, it will validate `chal` and thus enable `api-key`. Another idea is to keep the 1-shot enrollment and just have the `/.well-known` file contain a pubkey. But pulling in a whole new sig standard for this seems like overkill)
 
-If the domain already exists in the transparency service's prefix tree, then the service checks if the object is the special unenrollment form and, if so, replaces the site's leaf with a `TombstoneEntry` with the current time. If the object is not the special unenrollment form, then the transparency service updates the leaf's `asset_host` and `expiry` fields with the provided ones.
+If the domain already exists in the transparency service's prefix tree, then the service checks if the object is the special unenrollment form and, if so, replaces the site's leaf with a `TombstoneEntry` with the current time. If the object is not the special unenrollment form, then the transparency service updates the leaf's `asset_host` field with the provided one.
 
 Note: In all endpoints, it is intentional that `time_created` never changes for as long as that entry exists. The only time it changes is on deletion of that leaf.
 
@@ -260,7 +252,6 @@ To validate a `SigReq`, the witness:
     1. If it is not an `EntryDelete`,
         1. Ensures `chain_size` increases by 1 (TODO: should we permit proofs where a site adds more than one entry?)
         1. Ensures `time_created` is unchanged
-        1. Ensures `expiry` is in the future, and not too far in the future
         1. Computes the new chain hash of the entry using its stored old chain hash and the given entry's `resource_hash`.
     1. If it is an `EntryDelete`, sets the entry to a `TombstoneEntry` with the current epoch as `time_created`.
 1. Computes the new prefix tree root using the given entries and computed chain hashes
@@ -363,6 +354,6 @@ A site can enable transparency via the `WAICT-Transparency` header described abo
 
 ## Transparency service signaling
 
-Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
+Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users, the `enforce` flag must be set to `true`.
 
 A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. A transparency service MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
