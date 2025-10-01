@@ -11,10 +11,9 @@ The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZ
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
 * A **Web Resource** is a file identified by a URL whose contents are committed to by a cryptographic hash.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
-* The **Asset Host** is a party chosen by a site to be responsible for storing the larger assets associated with transparency. This includes the integrity manifest, asset pointer file, and assets themselves.
+* The **Asset Host** is a content-addressable storage service. It chosen by a site to be responsible for storing the larger assets associated with transparency. This includes the resources and any values that might be referenced inside those resources.
 * A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to. It maintains a mapping of site to transparency information.
 * A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives a proof of that the transparency service has correctly transitioned the values in its map. On success, the witness signs a representation of the map.
-
 
 ## Notation and Dependencies
 
@@ -40,36 +39,25 @@ We use the base64 encoding algorithms described in [RFC 4648](https://www.rfc-ed
 
 # The Transparency Service
 
-The Transparency Service maintains a mapping of domains to resource hashes (and further, the histories of those resources hashes). This is encoded as a prefix tree whose keys are domains and whose values are either a _tombstone_ entry, meaning an entry that has been deleted and only remains for logging purposes, or an _active_ entry, containing:
+The Transparency Service maintains a mapping of domains to resource hashes (and further, the histories of those resources hashes). This is encoded as a prefix tree whose keys are domains and whose values are either a _tombstone_ entry—meaning an entry that has been deleted and only remains for logging purposes—or an _active_ entry, containing:
 
 1. The prefix root that preceded the creation of the entry
 1. The hash of the resource
 1. The size of the resource history for the domain
 1. A URL to the asset host associated to the domain
-1. The _expiry_, i.e., the Unix timestamp, in seconds, denoting the time after which this entry becomes invalid
-1. The _enforce_ flag, which, when `true`, causes clients to enforce transparency checks even if the site's transparency-related headers have expired
-1. A set of _extensions_, i.e., values associated to the domain, which can be treated differently than ordinary resources.
 
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
 struct {
-  uint8 key[16],
-  uint8 value_hash[32],
-} Extension;
-
-struct {
-    uint8 epoch_created[32];
+    uint64 time_created;
     uint8 resource_hash[32];
     uint64 chain_size; (TODO: think whether this is necessary)
     uint8 asset_host_url<1..2^8-1>; (TODO permit many URLs)
-    uint64 expiry;
-    bool enforce;
-    Extension extensions<0..sizeof(Extension)*16-1>;
 } ActiveEntry;
 
 struct {
-    uint8 epoch_created[32];
-} TombstoneEntry; (TODO: figure out where to store expiry)
+    uint64 time_created;
+} TombstoneEntry;
 
 enum {
     ActiveEntry active_entry;
@@ -113,7 +101,7 @@ The enrolling site will return a response containing all the information the tra
       "type": "string",
       "maxLength": 255,
       "$comment": "URL of the asset host"
-    }
+    },
     "initial_chain_hash": {
       "type": "string",
       "maxLength": 64,
@@ -123,39 +111,9 @@ The enrolling site will return a response containing all the information the tra
       "type": "integer",
       "minimum": 0,
       "$comment": "Initial size of the site's history chain"
-    },
-    "enforce": {
-      "type": "boolean",
-      "$comment": "Whether this site has transparency enforced by all clients (until the expiry)."
-    },
-    "expiry": {
-      "type": "integer",
-      "minimum": 0,
-      "$comment": "The time, in Unix seconds, that this enrollment expires"
-    },
-    "extensions": {
-      "type": "array",
-      "maxItems": 32,
-      "items": { "$ref": "#/$defs/extensionItem" },
-      "$comment": "Extensions of the form key -> value"
     }
   },
-  "required": [ "asset_host", "initial_chain_hash", "expiry" ],
-  "$defs": {
-    "extensionItem": {
-      "type": "object",
-      "required": [ "key", "value" ],
-      "properties": {
-        "key": {
-          "type": "string",
-          "maxLength": "16",
-        },
-        "value": {
-          "type": "string",
-          "maxLength": "64",
-        },
-      }
-    }
+  "required": [ "asset_host", "initial_chain_hash" ]
   }
 }
 ```
@@ -165,25 +123,23 @@ If the site intends to unenroll, the site serves the special value:
   "asset_host": "",
   "initial_chain_hash": "",
   "initial_chain_size": 0,
-  "expiry": 0,
-  "enforce": false
 }
 ```
 
 After the transparency service makes the GET request, if it does not already have the domain, it:
 
 1 Creates a leaf with key `$site`
-1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `chain_size`, `asset_host_url`, `expiry`, and `enforce` equal to the given values, and with all extension keys set to the given keys, and `value_hash` set to `SHA256("waict-vh" || value)` for each entry. It also sets the `epoch_created` value to the current prefix tree root. (TODO: settle on epoch-created vs time-created)
+1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `chain_size`, and `asset_host_url` equal to the given values. It also sets the `time_created` value to the current Unix time in seconds.
 1. Computes a new prefix root given the new leaf
 1. Gets witness cosignatures on the prefix root (via the Witness API described below)
 1. Computes an inclusion proof of the leaf in the new prefix tree
-1. Returns a struct of the form
+1. Returns a `WaictInclusionProof`, defined as follows:
 ```
 struct {
   EntryWithCtx entry;
   PrefixProof inc_proof;
   uint8 signed_prefix_root<1..2^24-1>;
-} WaictEnrollmentResponse
+} WaictInclusionProof;
 ```
 where `signed_prefix_root` is a signed note whose text is
 ```
@@ -195,35 +151,43 @@ $tdomain/waict-v1/prefix-tree
 
 (TODO: this doesn't give the site an easy way to interface with the transparency service going forward. If the site wants to call `/append`, what authentication mechanism does it use? How do we ensure it is the same person that registered the site? One thought is to make this process challenge-response like ACME. That is, have `$tdomain/begin-enroll` responds with two values, `chal` and `api-key`. The site puts `chal` in its `/.well-known`, and it saves the `api-key`. Then when `$tdomain/end-enroll?site=$site` is called, it will validate `chal` and thus enable `api-key`. Another idea is to keep the 1-shot enrollment and just have the `/.well-known` file contain a pubkey. But pulling in a whole new sig standard for this seems like overkill)
 
-If the transparency service already has this domain, then it checks if the file is the special unenrollment form and, if so, replace the corresponding leaf with a `TombstoneEntry` with the last epoch value. If it is not the special unenrollment form, then the transparency service updates its `asset_host` and `expiry` fields with the provided ones. It also updates the `enforce` field with the provided one if the provided one is `true`. (TODO: and what about extensions? shouldn't updates in those be transparent?)
+If the domain already exists in the transparency service's prefix tree, then the service checks if the object is the special unenrollment form and, if so, replaces the site's leaf with a `TombstoneEntry` with the current time. If the object is not the special unenrollment form, then the transparency service updates the leaf's `asset_host` field with the provided one.
 
-Note: In all endpoints, it is intentional that `epoch_created` never changes for as long as that entry exists. The only time it changes is on deletion of that leaf.
+Note: In all endpoints, it is intentional that `time_created` never changes for as long as that entry exists. The only time it changes is on deletion of that leaf.
 
 ### Append to chain
 
 * Endpoint: `/append`
 * Method: POST
-* Parameter `domain`: domain of resource to add or update
-* Parameter `value`: base64-encoded value to append
-* Return value: A `WaictInclusionProof`, described below
+* Body: `application/octet-stream` containing a serialized `AppendReq`, defined below
+* Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
 * Authentication: Defined by the transparency service, e.g. a JWT. The transparency service MAY apply further policies or rate limits, e.g. requiring payment per resource logged.
 
-The append endpoint takes a resource value and appends its hash to that leaf's chain. The transparency service hashes the new value into the chain and increments the chain size.
+The append endpoint takes a domain and a resource value to append to that domain's chain:
+```
+struct {
+  uint8 domain<1..2^8-1>;
+  uint8 value<1..2^24-1>;
+} AppendReq;
+```
+
+The transparency service appends the given value hash to the corresponding entry. That is, the transparency service
+
+1. Fetches the current `EntryWithCtx` with key `domain`, erroring if no entry exists or if the entry is a `TombstoneEntry`
+1. Updates the entry's `resource_hash` to the resource hash of `value`
+1. Increments the entry's `chain_size`
+1. Updates the entry's `chain_hash` by computing the new chain hash with respect to the new resource hash
 
 (TODO: this should maybe support arbitrary fast-forward, not just single item appends; note this has to be within reason bc of the linear proof size)
 
 ### Get Leaf
 
-* Endpoint: `/get-leaf`
+* Endpoint: `/leaf`
 * Method: GET
-* Parameter `domain`: The domain of the site whose `EntryWithCtx` is desired
+* Query parameter `domain`: The domain of the site whose `EntryWithCtx` is desired
 * Return: An `application/octet-stream` containing a `WaictInclusionProof` for the given domain
 
-### Update leaf metadata
-
-(TODO: need to be able to update extensions, asset URLs, enforce, and also some way to bump expiry)
-
-### Resource Hash Tile
+### Get Resource Hash Tile
 
 * Endpoint: `/resource-hash-tile/<N>[.p/<W>]`
 * Method: GET
@@ -237,7 +201,7 @@ The transparency service MUST store a tile of an enrolled site for at least one 
 
 A transparency service MAY prune sites for inactivity. That is, it MAY unenroll them after a year of no updates.
 
-### Chain Hash
+### Get Chain Hash
 
 * Endpoint: `/chain-hash/<N>`
 * Method: GET
@@ -245,15 +209,13 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 
 `<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled site for at least one year.
 
-(TODO: should we batch manifests like tiles? they can get big)
-
 # Witness API
 
 A witness is a stateful signer. It maintains a full copy of the prefix tree that it is witnessing the evolution of. When a witness receives a signature request from a transparency service, it checks that the tree evolved faithfully, then signs the root. This is its only API endpoint.
 
 ## Request signature
 
-* Endpoint: `/req-sig`
+* Endpoint: `/request-sig`
 * Method: POST
 * Body: `application/octet-stream` containing a serialized `SigReq`, defined below
 
@@ -288,12 +250,10 @@ To validate a `SigReq`, the witness:
 1. Loads the last known prefix tree state belonging to the transparency service
 1. Updates all entries. For each element of `new_entries`, the witness:
     1. If it is not an `EntryDelete`,
-        1. Ensures `enforce` only moves from false to true, or false to false
         1. Ensures `chain_size` increases by 1 (TODO: should we permit proofs where a site adds more than one entry?)
-        1. Ensures `epoch_created` is unchanged
-        1. Ensures `expiry` is in the future, and not too far in the future
+        1. Ensures `time_created` is unchanged
         1. Computes the new chain hash of the entry using its stored old chain hash and the given entry's `resource_hash`.
-    1. If it is an `EntryDelete`, sets the entry to a `TombstoneEntry` with the current epoch as `epoch_created`.
+    1. If it is an `EntryDelete`, sets the entry to a `TombstoneEntry` with the current epoch as `time_created`.
 1. Computes the new prefix tree root using the given entries and computed chain hashes
 1. Verifies the transparency service's signature on the updated prefix root, aborting on failure
 1. Adds its own cosignature to the signed note. Again, this is timestamped ed25519
@@ -308,7 +268,7 @@ Note: if a transparency service becomes unable to produce new proofs, it will be
 
 The asset host only need to be able to return a file given its hash.
 
-## Fetch
+## Get Asset
 
 * Endpoint `/fetch/<hash>`, where `<hash>` is length-64 lowercase hex
 * Method: GET
@@ -316,60 +276,13 @@ The asset host only need to be able to return a file given its hash.
 
 These endpoints are immutable, so asset hosts SHOULD have long caching times.
 
-# Site API
+(TODO: think about signalling hash function in this. use multihash? or just put `/sha256/` in the path?)
 
-Clients which support transparency information and expect to be served a proof SHOULD include the header `WAICT-Transparency-Supported: 1` when connecting to a site. Future versions of this specification may define different version numbers.
+# Client Behavior
 
-In order to convey transparency information to the user, the site tells it where to find transparency information. This is done via a response header:
-```
-WAICT-Transparency: expires=<uint64>, inclusion=<str>, extensions=<str>
-```
-where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL to a transparency inclusion proof, and `extensions` is a base64url-encoded URL to the full list of extension values. (TODO: add an option to embed inclusion into the header if it's short enough) (TODO: also add an option to embed a non-inclusion proof in a newer tree so that you can convince clients you disabled transparency)
+A client's only job is to verify inclusion proofs. Of course, strong security guarantees only come when the client enforces the validity of these inclusion proofs, which means the client must know when the proofs are necessary and unnecessary (i.e., when transparency is enabled). The question of _signalling_ is often domain specific, though, and is thus left out of scope. See the appendix for examples of how this could be done.
 
-Note: The inclusion proof is dependent on the manifest and extensions. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
-
-## Extension endpoint
-
-The URL given in the `extension` field in the `WAICT-Transparency` header returns a JSON object of extension values. If a key matches one of the keys in `entry.extensions` served by the inclusion proof endpoint, then the value is either a string literal or a URL to the value. Concretely, every value whose key appears in `entry.extensions` MUST obey the schema:
-```json
-{
-  "oneOf": [
-    {
-      "title": "Literal",
-      "type": "string",
-    },
-    {
-      "title": "URL",
-      "type": "object",
-      "properties": {
-        "url": {
-          "type": "string",
-          "maxLength": 255,
-        }
-      }
-    }
-  ]
-}
-```
-If a URL is used, its response MUST have the MIME type `application/octet-stream`. The hash of a value is given by either the SHA256 hash of the string, encoded as UTF-8, in the case it is a literal, or the SHA256 hash of the octet stream, in the case it is a URL.
-
-## Inclusion endpoint
-
-The URL given in the `inclusion` field in the `WAICT-Transparency` header returns the entry (containing the resource hash), a proof showing that that entry is in the prefix tree, and a signed prefix tree root. Concretely, the response is an `application/octet-stream` containing a serialized `WaictInclusionProof`:
-```
-struct {
-  EntryWithCtx entry;
-  PrefixProof inc_proof;
-  uint8 signed_prefix_root<1..2^24>;
-} WaictInclusionProof;
-```
-where `signed_prefix_root` is a signed note of the form described above.
-
-## Verifying Inclusion
-
-The client must verify all pieces of data that are committed to by the tree. This includes the integrity policy and the extensions.
-
-### Verifying a Resource
+## Verifying a Resource
 
 To verify a given resource on site domain `$sdomain`, the user
 
@@ -378,6 +291,53 @@ To verify a given resource on site domain `$sdomain`, the user
 1. Verifies `inc_proof` with respect to the key `$sdomain`, value `entry`, and the parsed prefix root.
 1. Checks that the domain in the first line in `signed_prefix_root` (everything before the first `/`) matches the domain of the site being accessed.
 1. Verifies the cosignatures on `signed_prefix_root`. The client MAY choose the set of public keys that it trusts for this verification step.
+
+# Appendix
+
+We describe possible uses of this transparency protocol which are not considered part of the standard.
+
+## WAICT Transparency Signalling
+
+We want clients to signal that they support transparency. Doing so will allow the server to avoid sending unnecessary transparency information to the client. To this end, clients SHOULD include the header `WAICT-Transparency-Supported: 1` when connecting to a site. Future versions of this specification may define different version numbers.
+
+### Time-limited Signalling
+
+Sites must also signal to the client the parameters of its transparency guarantees. In particular, it must signal when transparency expires and where to find the inclusion proof. This is done via a response header:
+```
+WAICT-Transparency: expires=<uint64>, inclusion=<str>
+```
+where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL to a `WaictInclusionProof`. (TODO: add an option to embed inclusion into the header if it's short enough; also proof of non-inclusion or proof of tombstone inclusion to show that the site is unenrolled) (TODO: you don't need proof of non-inclusion if you just make sure your tombstone proof validity period is longer than the validity period of whatever is making the user believe transparency should be enabled)
+
+Note: The inclusion proof depends on the manifest. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
+
+### Time-independent Signalling
+
+A site can enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **preload list**, a list of sites that are preloaded on the browser. If a site is on the preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
+
+In this setting, browser vendors maintain the preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
+
+## Extension Values with Cooldown
+
+Sites may wish to have associated metadata that is subject to certain update rules. We call these _extensions_. As an example, a site may wish to support Sigstore-based code signing, and have developer OpenID identifiers as extensions. A cooldown period on this extension would guarantee that, if a site changes developer IDs, it must wait, e.g., 24 hours for the change to go into effect. Further, since the manifest extensions are themselves transparent, a site can use a simple script to monitor for extension changes and notify the maintainer if an unexpected change happens.
+
+To define a cooldown mechanism for a site extension, the site maintainer needs to make two updates every time it updates an extension called, say, `foobar`:
+
+1. It updates the extension `foobar` with the value that it desires (to delete, the value should be set to the empty string, essentially as a tombstone). It receives the inclusion proof of the manifest in the new prefix tree.
+1. It updates the extension `foobar-inclusion` with the inclusion proof above.
+
+Now any client can enforce the cooldown property by simply verifying `foobar-inclusion` and checking how old its timestamp is. If it verifies and the timestamp is sufficiently old, then it uses the value in `foobar`. Otherwise, it errors and uses whatever valid stored value it has.
+
+Of course, clients still have to know to expect the extension (otherwise a site can just delete the extension without cooldown). So any extension ecosystem will have to maintain its own preload list. If a site wants to disable the extension, they request removal from the preload list. Until then, they serve tombstone values.
+
+(TODO: the details above aren't worked out. Where are these extensions stored? How do you check an old inclusion proof without providing the entire old manifest + extensions?)
+
+## Inclusion endpoint
+
+The URL given in the `inclusion` field in the `WAICT-Transparency` header returns the entry (containing the resource hash), a proof showing that that entry is in the prefix tree, and a signed prefix tree root. Concretely, the response is an `application/octet-stream` containing a serialized `WaictInclusionProof`.
+
+## Verifying Inclusion
+
+The client must verify all pieces of data that are committed to by the tree. This includes the integrity policy and the extensions.
 
 ### Verifying extensions
 
@@ -390,12 +350,10 @@ To verify a single extension, given its key and value hash, the user:
 
 Transparency can be enabled by a site two different ways. One easy to revert and one hard to revert.
 
-## Header Signaling
-
 A site can enable transparency via the `WAICT-Transparency` header described above. The `expires` field tells the client to expect transparency information from the website until the provided time (exclusive). The client MAY then behave as if transparency were enabled.
 
 ## Transparency service signaling
 
-Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users until the expiry of the entry, the `enforce` flag must be set to `true`.
+Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users, the `enforce` flag must be set to `true`.
 
 A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. A transparency service MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
