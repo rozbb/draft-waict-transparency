@@ -11,8 +11,8 @@ The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZ
 * A **Site** is a web-based service that exposes some functionality that people want to use. Examples include Facebook or Proton Mail. **A Site is identified by its origin**, i.e., the triple of scheme, domain, and port. An origin is precisely specified in [RFC 6454](https://www.rfc-editor.org/rfc/rfc6454.html).
 * A **Web Resource** is a file identified by a URL whose contents are committed to by a cryptographic hash.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
-* The **Asset Host** is a content-addressable storage service. It chosen by a site to be responsible for storing the larger assets associated with transparency. This includes the resources and any values that might be referenced inside those resources.
 * A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to. It maintains a mapping of site to transparency information.
+* * An **Asset Host** is a content-addressable storage service. One or more are chosen by a site to be responsible for storing the assets logged in the transparency service.
 * A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives a proof of that the transparency service has correctly transitioned the values in its map. On success, the witness signs a representation of the map.
 
 ## Notation and Dependencies
@@ -44,7 +44,7 @@ The Transparency Service maintains a mapping of domains to resource hashes (and 
 1. The prefix root that preceded the creation of the entry
 1. The hash of the resource
 1. The size of the resource history for the domain
-1. A URL to the asset host associated to the domain
+2. A commitment to the asset hosts associated with the domain
 
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
@@ -52,7 +52,7 @@ struct {
     uint64 time_created;
     uint8 resource_hash[32];
     uint64 chain_size; (TODO: think whether this is necessary)
-    uint8 asset_host_url<1..2^8-1>; (TODO permit many URLs)
+    uint8 asset_hosts_hash[32];
 } ActiveEntry;
 
 struct {
@@ -79,6 +79,8 @@ The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources
 
 The initial chain hash is the empty string `""`.
 
+The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of percent-encoded URLs. `asset_hosts_hash = SHA256("waict-ah" || entry-1,entry-2,...)`.
+
 ## Transparency Service API
 
 We describe the HTTP API that the transparency service MUST expose. We denote the transparency service's domain by the variable `$tdomain`, and an enrolling site's domain as `$sdomain`.
@@ -97,10 +99,10 @@ The enrolling site will return a response containing all the information the tra
   "title": "Enrollment Data",
   "type": "object",
   "properties": {
-    "asset_host": {
+    "asset_hosts": {
       "type": "string",
-      "maxLength": 255,
-      "$comment": "URL of the asset host"
+      "maxLength": 8096,
+      "$comment": "Comma-separated list of URLs corresponding to asset hosts"
     },
     "initial_chain_hash": {
       "type": "string",
@@ -208,6 +210,18 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 * Returns: An `application/octet-stream` containing the `N`-th chain hash (0-indexed).
 
 `<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled site for at least one year.
+
+### Get Asset Hosts
+
+* Endpoint: `/asset-hosts/<hash>`
+* Method: GET
+* Returns: An `application/octet-stream` containing the comma-separated list of percent-encoded URLs corresponding to the `hash`.
+
+`<hash>` is the lowercase hex-encoded SHA-256 hash contained in an `EntryWithCtx`.
+
+Every hash referenced in an `EntryWithCtx` must be served at this endpoint.
+
+This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
 # Witness API
 
