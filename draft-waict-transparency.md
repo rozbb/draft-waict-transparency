@@ -12,7 +12,7 @@ The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZ
 * A **Web Resource** is a file identified by a URL whose contents are committed to by a cryptographic hash.
 * A **User** is someone that wants to use a Site. We treat a User and their browser as one in the same in this document.
 * A **Transparency Service** is a service that a Site registers with to announce that they have enabled transparency and will log web resources to. It maintains a mapping of site to transparency information.
-* * An **Asset Host** is a content-addressable storage service. One or more are chosen by a site to be responsible for storing the assets logged in the transparency service.
+* An **Asset Host** is a content-addressable storage service. One or more are chosen by a site to be responsible for storing the assets logged in the transparency service.
 * A **Witness** ensures that a Transparency Service is well-behaved, i.e., only makes updates that are allowed by the specification. It receives a proof of that the transparency service has correctly transitioned the values in its map. On success, the witness signs a representation of the map.
 
 ## Notation and Dependencies
@@ -21,7 +21,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 We use the TLS presentation syntax from [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html) to represent data structures and their canonical serialized format.
 
-We use `||` to denote concatenation of bytestrings.
+We use `||` to denote concatenation of bytestrings. Unless otherwise specified, we use the placeholder text `<digest>` to refer to the zero-padded length-64 lowercase hex encoding of a SHA-256 digest.
 
 We use the Prefix Tree data structure from the [key transparency draft specification](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree). We also use the `PrefixProof` structure for proofs of inclusion and non-inclusion, as well as the structure's associated verification algorithm.
 
@@ -44,7 +44,7 @@ The Transparency Service maintains a mapping of domains to resource hashes (and 
 1. The prefix root that preceded the creation of the entry
 1. The hash of the resource
 1. The size of the resource history for the domain
-2. A commitment to the asset hosts associated with the domain
+1. A commitment to the asset hosts associated with the domain
 
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
@@ -74,12 +74,12 @@ struct {
 
 The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources associated with a given domain. This is how its hashes are computed:
 
-1. A new resource `r` has resource hash `rh = SHA256("waict-rh" || r)`
-1. The chain hash `ch` is defined with respect to the new resource hash `rh` and the old chain hash `och` as `ch = SHA256("waict-ch" || och || rh)`
+1. A new resource `r` has resource hash `rh = SHA-256("waict-rh" || r)`
+1. The chain hash `ch` is defined with respect to the new resource hash `rh` and the old chain hash `och` as `ch = SHA-256("waict-ch" || och || rh)`
 
 The initial chain hash is the empty string `""`.
 
-The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of percent-encoded URLs. `asset_hosts_hash = SHA256("waict-ah" || entry-1,entry-2,...)`.
+The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of percent-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry-1,entry-2,...)`.
 
 ## Transparency Service API
 
@@ -213,13 +213,11 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 
 ### Get Asset Hosts
 
-* Endpoint: `/asset-hosts/<hash>`
+* Endpoint: `/asset-hosts/<digest>`
 * Method: GET
 * Returns: An `application/octet-stream` containing the comma-separated list of percent-encoded URLs corresponding to the `hash`.
 
-`<hash>` is the lowercase hex-encoded SHA-256 hash contained in an `EntryWithCtx`.
-
-Every hash referenced in an `EntryWithCtx` must be served at this endpoint.
+`<digest>` is an `asset_hosts_hash` inside some `EntryWithCtx` hosted by the transparency service. Every such value MUST be served at this endpoint.
 
 This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
@@ -284,9 +282,9 @@ The asset host only need to be able to return a file given its hash.
 
 ## Get Asset
 
-* Endpoint `/fetch/<hash>`, where `<hash>` is length-64 lowercase hex
+* Endpoint `/fetch/<digest>`
 * Method: GET
-* Response: An `octet-stream` containing the resource whose SHA256 hash is `<hash>`
+* Response: An `octet-stream` containing the resource whose SHA-256 hash is `<digest>`
 
 These endpoints are immutable, so asset hosts SHOULD have long caching times.
 
