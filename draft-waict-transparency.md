@@ -79,7 +79,7 @@ The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources
 
 The initial chain hash is the empty string `""`.
 
-The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of percent-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry-1,entry-2,...)`.
+The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry-1,entry-2,...)`.
 
 ## Transparency Service API
 
@@ -102,7 +102,7 @@ The enrolling site will return a response containing all the information the tra
     "asset_hosts": {
       "type": "string",
       "maxLength": 8096,
-      "$comment": "Comma-separated list of URLs corresponding to asset hosts"
+      "$comment": "Comma-separated list of base64-encoded URLs corresponding to asset hosts"
     },
     "initial_chain_hash": {
       "type": "string",
@@ -215,7 +215,7 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 
 * Endpoint: `/asset-hosts/<digest>`
 * Method: GET
-* Returns: An `application/octet-stream` containing the comma-separated list of percent-encoded URLs corresponding to the `hash`.
+* Returns: An `application/octet-stream` containing the comma-separated list of base64-encoded URLs corresponding to the `hash`.
 
 `<digest>` is an `asset_hosts_hash` inside some `EntryWithCtx` hosted by the transparency service. Every such value MUST be served at this endpoint.
 
