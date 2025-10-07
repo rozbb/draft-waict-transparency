@@ -308,29 +308,31 @@ To verify a given resource on site domain `$sdomain`, the user
 
 We describe possible uses of this transparency protocol which are not considered part of the standard.
 
-## WAICT Transparency Signalling
+## WAICT Transparency Signaling
 
 We want clients to signal that they support transparency. Doing so will allow the server to avoid sending unnecessary transparency information to the client. To this end, clients SHOULD include the header `WAICT-Transparency-Supported: 1` when connecting to a site. Future versions of this specification may define different version numbers.
 
-### Time-limited Signalling
+### Time-limited Signaling
 
 Sites must also signal to the client the parameters of its transparency guarantees. In particular, it must signal when transparency expires and where to find the inclusion proof. This is done via a response header:
 ```
 WAICT-Transparency: expires=<uint64>, inclusion=<str>
 ```
-where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL to a `WaictInclusionProof`. (TODO: add an option to embed inclusion into the header if it's short enough; also proof of non-inclusion or proof of tombstone inclusion to show that the site is unenrolled) (TODO: you don't need proof of non-inclusion if you just make sure your tombstone proof validity period is longer than the validity period of whatever is making the user believe transparency should be enabled)
+where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL which, when GETted, returns an `application/octet-stream`-encoded `WaictInclusionProof`. (TODO: add an option to embed inclusion into the header if it's short enough; also proof of non-inclusion or proof of tombstone inclusion to show that the site is unenrolled) (TODO: you don't need proof of non-inclusion if you just make sure your tombstone proof validity period is longer than the validity period of whatever is making the user believe transparency should be enabled)
 
 Note: The inclusion proof depends on the manifest. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
 
-### Time-independent Signalling
+### Time-independent Signaling
 
-A site can enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **preload list**, a list of sites that are preloaded on the browser. If a site is on the preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
+A site can enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **transparency preload list**, a list of sites that are preloaded on the browser. If a site is on the transparency preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
 
-In this setting, browser vendors maintain the preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
+In this setting, browser vendors maintain the transparency preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
 
-## Extension Values with Cooldown
+## Extensions
 
-Sites may wish to have associated metadata that is subject to certain update rules. We call these _extensions_. As an example, a site may wish to support Sigstore-based code signing, and have developer OpenID identifiers as extensions. A cooldown period on this extension would guarantee that, if a site changes developer IDs, it must wait, e.g., 24 hours for the change to go into effect. Further, since the manifest extensions are themselves transparent, a site can use a simple script to monitor for extension changes and notify the maintainer if an unexpected change happens.
+Sites may wish to have associated metadata that is subject to certain update rules. We call these **extensions**.
+
+As an example, a site may wish to support Sigstore-based code signing, and have developer OpenID identifiers as extensions. A cooldown period on this extension would guarantee that, if a site changes developer IDs, it must wait, e.g., 24 hours for the change to go into effect. Further, since the manifest extensions are themselves transparent, a site can use a simple script to monitor for extension changes and notify the maintainer if an unexpected change happens.
 
 To define a cooldown mechanism for a site extension, the site maintainer needs to make two updates every time it updates an extension called, say, `foobar`:
 
@@ -339,33 +341,13 @@ To define a cooldown mechanism for a site extension, the site maintainer needs t
 
 Now any client can enforce the cooldown property by simply verifying `foobar-inclusion` and checking how old its timestamp is. If it verifies and the timestamp is sufficiently old, then it uses the value in `foobar`. Otherwise, it errors and uses whatever valid stored value it has.
 
-Of course, clients still have to know to expect the extension (otherwise a site can just delete the extension without cooldown). So any extension ecosystem will have to maintain its own preload list. If a site wants to disable the extension, they request removal from the preload list. Until then, they serve tombstone values.
-
 (TODO: the details above aren't worked out. Where are these extensions stored? How do you check an old inclusion proof without providing the entire old manifest + extensions?)
 
-## Inclusion endpoint
+### Preload Lists for Extensions
 
-The URL given in the `inclusion` field in the `WAICT-Transparency` header returns the entry (containing the resource hash), a proof showing that that entry is in the prefix tree, and a signed prefix tree root. Concretely, the response is an `application/octet-stream` containing a serialized `WaictInclusionProof`.
+Clients still have to know to expect the extension, otherwise a site can just delete the extension without cooldown. So any extension ecosystem will have to maintain its own preload list. If a site wants to disable the extension, they request removal from the preload list. Until then, they serve tombstone values.
 
-## Verifying Inclusion
+Another option is to have extensions piggyback on the transparency preload list. This requires one modification: rather than being a list, we say browser vendors maintain a **transparency preload dictionary**, mapping domains to hashes. 
 
-The client must verify all pieces of data that are committed to by the tree. This includes the integrity policy and the extensions.
-
-### Verifying extensions
-
-To verify a single extension, given its key and value hash, the user:
-
-1. Checks that the given key and value hash appear in `leaf.extensions`
-1. Verifies `inc_proof` and signatures as above
-
-# Signaling Transparency to the User
-
-Transparency can be enabled by a site two different ways. One easy to revert and one hard to revert.
-
-A site can enable transparency via the `WAICT-Transparency` header described above. The `expires` field tells the client to expect transparency information from the website until the provided time (exclusive). The client MAY then behave as if transparency were enabled.
-
-## Transparency service signaling
-
-Mere presence in the transparency service map does not imply that a website has transparency enabled for all users. To enable it for all users, the `enforce` flag must be set to `true`.
-
-A site can opt into this stronger enforcement by following the enrollment procedure with `enforce` set to `true`. A transparency service MUST NOT permit `enforce` to be reverted to `false`. If a site operator wishes to disable `enforce`, they must first unenroll.
+In this setup, the browser vendor maintains the signup form as before, but also exposes an input form, where site owners can write the extensions they wish to commit to to all users. The 
+vendor hashes this list and sets this to the site's value in the transparency preload dictionary. When a user navigates to a site in the preload dictionary, the user retrieves the hash, and expects the site to reveal the extension list it committed to.
