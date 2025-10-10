@@ -93,7 +93,7 @@ We describe the HTTP API that the transparency service MUST expose. We denote th
 
 Calling this endpoint causes the transparency service to make an HTTPS GET query to `https://$site/.well-known/waict-enroll` (TODO: register with IANA).
 
-The enrolling site will return a response containing all the information the transparency service needs to create a new `EntryWithCtx`. Concretely, the site responds with with MIME type `application/json` and the schema (TODO: should history size be in here really? what is the initial chain hash for?):
+The enrolling site will return a response containing all the information the transparency service needs to create a new `EntryWithCtx`. Concretely, the site responds with with MIME type `application/json` and the schema:
 ```json
 {
   "title": "Enrollment Data",
@@ -103,28 +103,16 @@ The enrolling site will return a response containing all the information the tra
       "type": "string",
       "maxLength": 8096,
       "$comment": "Comma-separated list of base64-encoded URLs corresponding to asset hosts"
-    },
-    "initial_chain_hash": {
-      "type": "string",
-      "maxLength": 64,
-      "$comment": "Hex-encoded hash representing site's history"
-    },
-    "initial_chain_size": {
-      "type": "integer",
-      "minimum": 0,
-      "$comment": "Initial size of the site's history chain"
     }
   },
-  "required": [ "asset_host", "initial_chain_hash" ]
+  "required": [ "asset_hosts" ]
   }
 }
 ```
 If the site intends to unenroll, the site serves the special value:
 ```json
 {
-  "asset_host": "",
-  "initial_chain_hash": "",
-  "initial_chain_size": 0,
+  "asset_hosts": [],
 }
 ```
 
