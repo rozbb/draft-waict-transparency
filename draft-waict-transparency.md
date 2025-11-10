@@ -115,6 +115,7 @@ If the site intends to unenroll, the site serves the special value:
   "asset_hosts": [],
 }
 ```
+(TODO: There is an argument that empty asset hosts should be allowed. Eg if you want to sign up for website change monitoring without auditability.)
 
 After the transparency service makes the GET request, if it does not already have the domain, it:
 
