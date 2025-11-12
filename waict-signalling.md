@@ -34,6 +34,8 @@ Sites might wish to enroll in more than just transparency. As an example, a site
 
 ## Preload Dictionary
 
+(TODO: This idea is very tentative. Kill this section if it is not feasible)
+
 Clients have to know to expect the extension, otherwise a site can just delete the extension without cooldown. So any extension ecosystem will have to maintain its own preload list. Equivalently, the transparency preload list can associate every entry with a hash. A site includes (the hash of) all their enabled extensions in this **transparency preload dictionary**, to ensure clients enforce these extensions.
 
 ## Extension Endpoints
