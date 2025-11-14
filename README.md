@@ -4,8 +4,8 @@
 
 An introductory blog post can be found [here](https://blog.cloudflare.com/improving-the-trustworthiness-of-javascript-on-the-web/).
 
-This specification proposes a set of protocols to provide _consistency_ and _transparency_ to the distribution of manifest files. That is, it proposes system by which end users can be assured that the manifest they receive is the same manifest all other end users receive, and by which third party auditors can review all the code committed to in a manifest, even long after the manifest was served to an end user.
+These specifications propose a set of protocols to provide _consistency_ and _transparency_ to the distribution of manifest files. That is, they proposes system by which end users can be assured that the manifest they receive is the same manifest all other end users receive, and by which third party auditors can review all the code committed to in a manifest, even long after the manifest was served to an end user.
 
 # License
 
-This work is marked by Michael Rosenberg with [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+All work in this repo is marked by Michael Rosenberg with [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).

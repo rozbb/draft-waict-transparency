@@ -1,8 +1,8 @@
-# WAICT Webapp Transparency for the Browser
+# WAICT APIs
 
 # Introduction
 
-This document describes a transparency system for web resources. It enables clients fetching web resources, identified by a URL, to be assured that the received web resource has been publicly logged. It also enables website operators (and others) to enumerate the history of a web resource and observe when it changes.
+This document describes a set of APIs for a transparency system for web resources. It enables clients fetching web resources, identified by a URL, to be assured that the received web resource has been publicly logged. It also enables website operators (and others) to enumerate the history of a web resource and observe when it changes.
 
 The primary use case is [WAICT](https://docs.google.com/document/d/16-cvBkWYrKlZHXkWRFvKGEifdcMthUfv-LxIbg6bx2o/edit?tab=t.0#heading=h.hqduv7qhbp3k), Web Application Integrity, Consistency and Transparency, which aims to bring stronger transparency and integrity properties to applications delivered over the web in order to support properties like end-to-end encrypted messaging.
 
@@ -59,9 +59,13 @@ struct {
     uint64 time_created;
 } TombstoneEntry;
 
-enum {
-    ActiveEntry active_entry;
-    TombstoneEntry tombstone_entry;
+enum { active(0), tombstone(1) } EntryTag;
+struct {
+    EntryTag type;
+    select (Entry.type) {
+        case active: ActiveEntry;
+        case tombstone: TombstoneEntry;
+    };
 } Entry;
 
 struct {
@@ -79,7 +83,7 @@ The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources
 
 The initial chain hash is the empty string `""`.
 
-The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry-1,entry-2,...)`.
+The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry1_b64 || "," || entry2_b64 || "," || ...)`.
 
 ## Transparency Service API
 
@@ -115,6 +119,7 @@ If the site intends to unenroll, the site serves the special value:
   "asset_hosts": [],
 }
 ```
+(TODO: There is an argument that empty asset hosts should be allowed. Eg if you want to sign up for website change monitoring without auditability.)
 
 After the transparency service makes the GET request, if it does not already have the domain, it:
 
@@ -123,19 +128,14 @@ After the transparency service makes the GET request, if it does not already hav
 1. Computes a new prefix root given the new leaf
 1. Gets witness cosignatures on the prefix root (via the Witness API described below)
 1. Computes an inclusion proof of the leaf in the new prefix tree
-1. Returns a `WaictInclusionProof`, defined as follows:
+1. Returns an `EntryWithProof`, defined as follows:
 ```
 struct {
   EntryWithCtx entry;
-  PrefixProof inc_proof;
-  uint8 signed_prefix_root<1..2^24-1>;
-} WaictInclusionProof;
+  WaictInclusionProof inc_proof;
+} EntryWithProof;
 ```
-where `signed_prefix_root` is a signed note whose text is
-```
-$tdomain/waict-v1/prefix-tree
-<base64_root>
-```
+where `WaictInclusionProof` is from the [WAICT proofs spec](./waict-proofs.md).
 
 (TODO: consider how to deal with longer latency on enrollments. Should you get a timestamp for when the next epoch lands, or should your connection just hang until it comes)
 
@@ -280,41 +280,11 @@ These endpoints are immutable, so asset hosts SHOULD have long caching times.
 
 # Client Behavior
 
-A client's only job is to verify inclusion proofs. Of course, strong security guarantees only come when the client enforces the validity of these inclusion proofs, which means the client must know when the proofs are necessary and unnecessary (i.e., when transparency is enabled). The question of _signalling_ is often domain specific, though, and is thus left out of scope. See the appendix for examples of how this could be done.
-
-## Verifying a Resource
-
-To verify a given resource on site domain `$sdomain`, the user
-
-1. Computes the resource hash `rh` and checks that it equals `entry.resource_hash`.
-1. Parses `signed_prefix_root` and extracts the root hash.
-1. Verifies `inc_proof` with respect to the key `$sdomain`, value `entry`, and the parsed prefix root.
-1. Checks that the domain in the first line in `signed_prefix_root` (everything before the first `/`) matches the domain of the site being accessed.
-1. Verifies the cosignatures on `signed_prefix_root`. The client MAY choose the set of public keys that it trusts for this verification step.
+A client's only job is to verify inclusion proofs. This is covered in the [WAICT proofs spec](waict-proofs.md). Of course, strong security guarantees only come when the client enforces the validity of these inclusion proofs, which means the client must know when the proofs are necessary and unnecessary (i.e., when transparency is enabled). This question of _signalling_ is covered in the [WAICT signalling spec](waict-signalling.md).
 
 # Appendix
 
 We describe possible uses of this transparency protocol which are not considered part of the standard.
-
-## WAICT Transparency Signaling
-
-We want clients to signal that they support transparency. Doing so will allow the server to avoid sending unnecessary transparency information to the client. To this end, clients SHOULD include the header `WAICT-Transparency-Supported: 1` when connecting to a site. Future versions of this specification may define different version numbers.
-
-### Time-limited Signaling
-
-Sites must also signal to the client the parameters of its transparency guarantees. In particular, it must signal when transparency expires and where to find the inclusion proof. This is done via a response header:
-```
-WAICT-Transparency: expires=<uint64>, inclusion=<str>
-```
-where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL which, when GETted, returns an `application/octet-stream`-encoded `WaictInclusionProof`. (TODO: add an option to embed inclusion into the header if it's short enough; also proof of non-inclusion or proof of tombstone inclusion to show that the site is unenrolled) (TODO: you don't need proof of non-inclusion if you just make sure your tombstone proof validity period is longer than the validity period of whatever is making the user believe transparency should be enabled)
-
-Note: The inclusion proof depends on the manifest. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
-
-### Time-independent Signaling
-
-A site can enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **transparency preload list**, a list of sites that are preloaded on the browser. If a site is on the transparency preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
-
-In this setting, browser vendors maintain the transparency preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
 
 ## Extensions
 
@@ -335,7 +305,7 @@ Now any client can enforce the cooldown property by simply verifying `foobar-inc
 
 Clients still have to know to expect the extension, otherwise a site can just delete the extension without cooldown. So any extension ecosystem will have to maintain its own preload list. If a site wants to disable the extension, they request removal from the preload list. Until then, they serve tombstone values.
 
-Another option is to have extensions piggyback on the transparency preload list. This requires one modification: rather than being a list, we say browser vendors maintain a **transparency preload dictionary**, mapping domains to hashes. 
+Another option is to have extensions piggyback on the transparency preload list. This requires one modification: rather than being a list, we say browser vendors maintain a **transparency preload dictionary**, mapping domains to hashes.
 
-In this setup, the browser vendor maintains the signup form as before, but also exposes an input form, where site owners can write the extensions they wish to commit to to all users. The 
+In this setup, the browser vendor maintains the signup form as before, but also exposes an input form, where site owners can write the extensions they wish to commit to to all users. The
 vendor hashes this list and sets this to the site's value in the transparency preload dictionary. When a user navigates to a site in the preload dictionary, the user retrieves the hash, and expects the site to reveal the extension list it committed to.
