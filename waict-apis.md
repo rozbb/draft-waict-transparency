@@ -209,6 +209,55 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 
 This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
+### Get Tree Events
+
+* Endpoint: `/tree-events/<N>`
+* Method: GET
+* Returns: An `application/octet-stream` containing `TreeEvents`. The contained events have epoch in the range `[N, N+1000)`, and appear in ascending order of epoch.
+
+The tree events returned contain the number of events, a vector of events, and _checkpoint indices_ into the vector. A checkpoint index `i` means that the tree after processing the `i`-th element of `events` (0-indexed) is a checkpointed tree.
+
+`<N>` is formatted as above. Since this endpoint produces very large responses, a transparency service MAY require additional GET parameters or headers for the sake of authorization.
+
+The definition of `TreeEvents` is below:
+```
+struct {
+  opaque url<1..511>;
+} AssetHost;
+
+struct {
+  opaque domain<1..255>;
+  AssetHost asset_hosts<1..2^13-1>;
+} TreeEventAdd;
+
+struct {
+  opaque domain<1..255>;
+  AssetHost asset_hosts<1..2^13-1>;
+} TreeEventRemove;
+
+struct {
+  opaque domain<1..255>;
+  opaque new_resource_hash[32];
+} TreeEventUpdate;
+
+enum { add(0), remove(1), append(3) } TreeEventTag;
+struct {
+  TreeEventTag type;
+  select (TreeEvent.type) {
+      case add: TreeEventAdd;
+      case remove: TreeEventRemove;
+      case append: TreeEventAppend;
+  };
+} TreeEvent;
+
+struct {
+  uint16 num_events;
+  uint16 checkpointed_idxs<0..31>,
+  TreeEvent events<1..2^24-1>;
+} TreeEvents;
+```
+
+
 # Witness API
 
 A witness is a stateful signer. It maintains a full copy of the prefix tree that it is witnessing the evolution of. When a witness receives a signature request from a transparency service, it checks that the tree evolved faithfully, then signs the root. This is its only API endpoint.
