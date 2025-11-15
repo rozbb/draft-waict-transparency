@@ -110,7 +110,6 @@ The enrolling site will return a response containing all the information the tra
     }
   },
   "required": [ "asset_hosts" ]
-  }
 }
 ```
 If the site intends to unenroll, the site serves the special value:
