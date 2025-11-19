@@ -59,6 +59,12 @@ A client encountering a WAICT record for an origin MUST treat all previously cac
 
 TODO: Guidance around handling requests made in parallel or concurrently to discovering a header.
 
+If the client had a previously stored WAICT record for an origin, it will overwrite it with the new configuration if:
+
+ * The new record is mode 'enforce' and the previous record was mode 'audit', or
+ * The new record and old record have a mathcing mode and the effective `max-age` is further in the future.
+
+
 When a client has a stored WAICT record for an origin, the client MUST check that each response is valid according to the provided WAICT manifest and transparency proof (see spec TODO).
 
 If any response is invalid, as described in spec TODO, the client follow the enforcement requirements laid out below.
@@ -86,6 +92,8 @@ The behavior of Enforce mode varies dependning on whether the error is localised
 If the error is localised to a sub resource (e.g. the main page can be loaded, the WAICT manifest can be loaded and is transparent) then the client MUST NOT process that resource.
 
 Otherwise, the client MUST display a warning page describing that a WAICT error has occurred. The client SHOULD NOT allow the user to bypass the error page.
+
+The client SHOULD also report the error as described in section X.X.
 
 ## Preloading
 
@@ -115,3 +123,13 @@ Vendors may choose different cutoffs for when they cosndier a preload list to be
 
 * Enforce provides security, audit doesn't.
 * TOFU vs Preload.
+
+# Appendix: Design Decisions
+
+This design emulates that of RFC 6797 (HSTS).
+
+A key constraint is that client vendors typically cannot ensure that their clients have consistent or non-stale configurations. Further, connection failures are typically intolerable to website operators.
+
+As a consequence, this design ensures that websites continues to maintain availability if a client has stale data (enforced via the max-age signals on headers and preload-lists).
+
+This also means that security is only available for non-stale clients.
