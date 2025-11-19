@@ -1,55 +1,117 @@
-# WAICT Transparency Signaling
+# WAICT Enforcement Signaling
 
 # Introduction
 
-This spec describes the ways a client signals to a server that they support WAICT, and vice-versa.
+This spec describes the ways a server signals to a client to enforce the use of WAICT.
+
+# Conventions
+
+This document uses Structured Field Values for HTTP (RFC 8941).
 
 # Client-side Signalling
 
-Clients MAY signal that they support transparency. Doing so will allow the server to avoid sending unnecessary transparency information to the client. To signal transparency support, the client includes the request header `WAICT-Transparency-Supported: 1` in their requests to the site. Future versions of this specification may define different version numbers.
+Clients SHOULD signal that they support WAICT. Doing so will allow the server to avoid sending unnecessary information to the client.
+
+To signal WAICT support, the client includes the structured request header `WAICT-Supported` which is an `sf-list` of `sf-integers` in their requests to the site.
+
+Each integer defines a version of WAICT supported by the client. The version defined by this document is `1`.
+
+Future versions of this specification may define different version numbers.
+
+TODO: More idiomatic way to do this? User-Agent Capabilities?
 
 # Server-side Signalling
 
-Sites MAY to signal to the client the parameters of its transparency guarantees.
+Sites wanting clients to benefit from the security guarentees SHOULD signal to the client to enforce the use of WAICT via a HTTP Header attached to their responses..
 
-## Time-bound Signaling
+## Header Format
 
-The server MAY signal when transparency expires and where to find the inclusion proof. This is done via a response header:
-```
-WAICT-Transparency: expires=<uint64>, inclusion=<str>
-```
-where the value of the `expires` field is Unix time in seconds, the value of `inclusion` is a base64url-encoded URL which, when GETted, returns an `application/octet-stream`-encoded `EntryAndProof`. (TODO: add an option to embed inclusion into the header if it's short enough; also proof of non-inclusion or proof of tombstone inclusion to show that the site is unenrolled) (TODO: you don't need proof of non-inclusion if you just make sure your tombstone proof validity period is longer than the validity period of whatever is making the user believe transparency should be enabled)
+This takes the form of a structured header named `WAICT` with the field value Dictionary. The following key-values MUST be present.
 
-Note: The inclusion proof depends on the manifest. To ensure that all data is coherent, the URLs SHOULD include some component that is unique to the site version, e.g., the current site history hash, or the integrity policy hash.
+* `version` an `sf-integer`. If the value is not `1` this header must be ignored.
+* `max-age` a `sf-integer` which must be `>= 0`.
+* `preload` a `sf-boolean`.
+* `mode` a `sf-token` containing either `audit` or `enforce`.
 
-## Time-independent Signaling
+Any other keys MUST be ignored. Servers may set additional keys prefixed `GREASE` which clients MUST ignore. If one or more of these keys is missing or invalid, the entire header MUST be ignored.
 
-A site MAY enable transparency in a way that expires much further in the future, and has stronger first-use guarantees. We can define a **transparency preload list**, a list of sites that are preloaded on the browser. If a site is on the transparency preload list then the client will enforce that it receives transparency information from the site, unless the site can prove that it has unenrolled since that preload list was constructed.
+## Semantics
 
-In this setting, browser vendors maintain the transparency preload list, and MUST keep the invariant that any site on the preload list stays there until it is unenrolled (either intentionally or by pruning). Further, the preload list must itself be transparent.
+Note to self: Manifest can't be configurable for WAICT.
 
-# Signalling Extensions
+The `version` field is used for negotiation. The only defined value is `1`. Future standards may define alternative values.
 
-Sites might wish to enroll in more than just transparency. As an example, a site may wish to support Sigstore-based code signing, and have developer OpenID identifiers as extensions. A cooldown period on this extension would guarantee that, if a site changes developer IDs, it must wait, e.g., 24 hours for the change to go into effect. Further, since the manifest extensions are themselves transparent, a site can use a simple script to monitor for extension changes and notify the maintainer if an unexpected change happens.
+The `max-age` field indicates how long the client should cache this header for in seconds.
 
-## Preload Dictionary
+The `preload` field indicates whether the server wishes for client vendors to provision clients in advance with this signal. Guidance for this field is laid out in Section X.X.
 
-(TODO: This idea is very tentative. Kill this section if it is not feasible)
+The `mode` field indicates the type of enforcement that the client should enact.
 
-Clients have to know to expect the extension, otherwise a site can just delete the extension without cooldown. So any extension ecosystem will have to maintain its own preload list. Equivalently, the transparency preload list can associate every entry with a hash. A site includes (the hash of) all their enabled extensions in this **transparency preload dictionary**, to ensure clients enforce these extensions.
+## Client Behavior
 
-## Extension Endpoints
+Upon parsing a valid `WAICT` header, the client SHOULD store the `mode` against the `origin` for at most `max-age` seconds.
 
-A site stores its extension list at  `/.well-known/waict-extension-list`. This endpoint has MIME type `application/octet-stream`. Its body is a `list`, defined below
-```
-COMMA ::= ','
-tag ::= [a-z0-9.\-]{1..32}
-emptyList ::= COMMA?
-nonemptyList ::= tag | (COMMA | tag){0..256} | COMMA?
-list ::= emptyList OR nonemptyList
-```
-In words, `list` is a comma-separated list (trailing comma permitted) of length at most 256 of `tag`s, each of which is a lowercase alphanumeric (plus dashes) nonempty string of length at most 32. Duplicate entries are permitted, they are just treated as if the entry appeared once. The extension list endpoint SHOULD be included in the site's integrity manifest, thus providing transparency for extensions.
+There may be situations in which clients are unable to store this record. For example, clients may not have access to long term state (e.g. they are running a private browsing mode). Such clients SHOULD store the record for as long as they are able.
 
-`tag` values SHOULD be registered with IANA in order to avoid collision.
+If the client uses partitioned storage by origin and this header is set on a third party domain, the client SHOULD NOT store it. WAICT is only effective in a first-party context.
 
-The endpoint `/.well-known/waict-extensions/` is where all extension-specific data lives. For a given extension tag `t`, all `t`-specific extension data SHOULD be stored with the path prefix `/.well-known/waict-extensions/<t>`. This way, if tags do not collide, their associated data will not collide either.
+A client encountering a WAICT record for an origin MUST treat all previously cached respones for that origin as stale.
+
+TODO: Guidance around handling requests made in parallel or concurrently to discovering a header.
+
+When a client has a stored WAICT record for an origin, the client MUST check that each response is valid according to the provided WAICT manifest and transparency proof (see spec TODO).
+
+If any response is invalid, as described in spec TODO, the client follow the enforcement requirements laid out below.
+
+### Audit
+
+Audit mode is intended for web developers to validate their deployment. It does not provide security for clients.
+
+To that end, compliant clients MUST display appropriate error messages in their console, developer tools or other messaging surfaces intended for expert users.
+
+Compliant clients MUST still load the resource correctly.
+
+Compliant clients MUST NOT display error messages to end-users who are not experts or have not otherwise indicated they wish to see additional technical information.
+
+If the server has indicated support for the Reporting API (https://developer.mozilla.org/en-US/docs/Web/API/Reporting_API), the client SHOULD report the WAICT report error with the following structure:
+
+TODO
+
+### Enforce
+
+Enforce mode is intended to provide security for clients.
+
+The behavior of Enforce mode varies dependning on whether the error is localised to a subresource.
+
+If the error is localised to a sub resource (e.g. the main page can be loaded, the WAICT manifest can be loaded and is transparent) then the client MUST NOT process that resource.
+
+Otherwise, the client MUST display a warning page describing that a WAICT error has occurred. The client SHOULD NOT allow the user to bypass the error page.
+
+## Preloading
+
+Sites can signal their desire for client vendors to preload WAICT status onto their devices. As a general rule, sites SHOULD NOT preload WAICT status. Preloading WAICT may lead to irrecovable errors. However, some sites with particular threat models MAY preload.
+
+The details of how client vendors are alerted to this are vendor-specific, but sites wishing to enable preloading MUST:
+
+* Set mode to enforce.
+* Set preload to 1
+* Set max-age to a value greater than 1 year.
+
+Client vendors may configure clients with preload information via their client-specific out of band channels. Such clients should enforce WAICT as long as their vendor-supplied preload list is up to date.
+
+Vendors may choose different cutoffs for when they cosndier a preload list to be stale, but are RECOMMENDED to use a value of 30 days. That is, if a client goes 30 days without recieving an updated preload list, it should stop enforcing entries on the preload list.
+
+## Server Operator Advice
+
+* Be careful. You can kill your website.
+* Audit only. Every audit failure would be a broken client.
+* Switch to enforce when confident.
+* Gradual Rollout. Consider selective roll out e.g. to a specific locale.
+* Short lifetime. Raise it periodically.
+* Preload only if extremely confident and committed.
+* Disable by stopping serving the header. Serve the transparent opt-out.
+
+# Security Considerations
+
+* Enforce provides security, audit doesn't.
+* TOFU vs Preload.
