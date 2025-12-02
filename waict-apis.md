@@ -74,6 +74,42 @@ struct {
 } EntryWithCtx;
 ```
 
+As sites interact with the transparency service, the prefix tree changes. These changes are encoded as a growing sequence of `TreeEvent` structs, defined below. The index of the tree event in the full sequence (0-indexed) is called the event's _epoch_.
+
+```
+struct {
+  opaque url<1..511>;
+} AssetHost;
+
+struct {
+  opaque domain<1..255>;
+  AssetHost asset_hosts<1..2^13-1>;
+} TreeEventAdd;
+
+struct {
+  opaque domain<1..255>;
+} TreeEventRemove;
+
+struct {
+  opaque domain<1..255>;
+  opaque new_resource_hash[32];
+} TreeEventUpdate;
+
+enum { add(0), remove(1), update(3) } TreeEventTag;
+struct {
+  TreeEventTag type;
+  select (TreeEvent.type) {
+      case add: TreeEventAdd;
+      case remove: TreeEventRemove;
+      case update: TreeEventUpdate;
+  };
+} TreeEvent;
+```
+
+Finally, the tree event sequence has a subsequence called _checkpoint indices_. Each checkpoint index correspond to a tree state that is cosigned by witnesses. Specifically, a checkpoint index `i` corresponds to the prefix tree resulting from processing the tree events with epochs `[0, i)` in order.
+
+(TODO: should events be strongly ordered? That is, should events have their epoch included inside, and should that epoch be included in some hash computations? This would make it so that any two people who agree on a prefix tree root necessarily agree on a tree event sequence. On the other hand, it is weird to hash in unrelated information for tree hashes.)
+
 ## Hash Computations
 
 The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources associated with a given domain. This is how its hashes are computed:
@@ -83,7 +119,7 @@ The `chain_hash` field of an `EntryWithCtx` encodes the history of the resources
 
 The initial chain hash is the empty string `""`.
 
-The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs. `asset_hosts_hash = SHA-256("waict-ah" || entry1_b64 || "," || entry2_b64 || "," || ...)`.
+The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs, with no trailing comma. `asset_hosts_hash = SHA-256("waict-ah" || entry1_b64 || "," || entry2_b64 || "," || ...)`.
 
 ## Transparency Service API
 
@@ -113,7 +149,7 @@ The enrolling site will return a response containing all the information the tra
   }
 }
 ```
-If the site intends to unenroll, the site serves the special value:
+If the site intends to unenroll, the site responds with the special value:
 ```json
 {
   "asset_hosts": [],
@@ -123,7 +159,7 @@ If the site intends to unenroll, the site serves the special value:
 
 After the transparency service makes the GET request, if it does not already have the domain, it:
 
-1 Creates a leaf with key `$site`
+1. Creates a leaf with key `$site`
 1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash`, `chain_size`, and `asset_host_url` equal to the given values. It also sets the `time_created` value to the current Unix time in seconds.
 1. Computes a new prefix root given the new leaf
 1. Gets witness cosignatures on the prefix root (via the Witness API described below)
@@ -213,50 +249,20 @@ This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2
 
 * Endpoint: `/tree-events/<N>`
 * Method: GET
-* Returns: An `application/octet-stream` containing `TreeEvents`. The contained events have epoch in the range `[N, N+1000)`, and appear in ascending order of epoch.
+* Returns: An `application/octet-stream` containing `TreeEvents`. The contained events have epoch in the range `[N, N+1000)`, and appear in ascending order of epoch. The contained checkpoint indices, if any, are in the range `(N, N+1000]`.
 
-The tree events returned contain the number of events, a vector of events, and _checkpoint indices_ into the vector. A checkpoint index `i` means that the tree after processing the `i`-th element of `events` (0-indexed) is a checkpointed tree.
+`<N>` is formatted as above. Once an event or checkpoint index has been included in a response for `/tree-events/<N>`, it MUST be included in all future responses for the same endpoint, and the event MUST occur in the same position. As a corrolary, once a response has reached 1000 events, its `events` field is immutable. To help with long-term caching, we say that the first response for `/tree-events/<N>` that contains 1000 events is the response that the endpoint MUST serve forever. This means that checkpoint indices in the specified range MUST NOT change after the 1000th event has been served.
 
-`<N>` is formatted as above. Since this endpoint produces very large responses, a transparency service MAY require additional GET parameters or headers for the sake of authorization.
+Since this endpoint produces very large responses, a transparency service MAY require additional GET parameters or headers for authorization purposes.
 
 The definition of `TreeEvents` is below:
 ```
-struct {
-  opaque url<1..511>;
-} AssetHost;
-
-struct {
-  opaque domain<1..255>;
-  AssetHost asset_hosts<1..2^13-1>;
-} TreeEventAdd;
-
-struct {
-  opaque domain<1..255>;
-  AssetHost asset_hosts<1..2^13-1>;
-} TreeEventRemove;
-
-struct {
-  opaque domain<1..255>;
-  opaque new_resource_hash[32];
-} TreeEventUpdate;
-
-enum { add(0), remove(1), append(3) } TreeEventTag;
-struct {
-  TreeEventTag type;
-  select (TreeEvent.type) {
-      case add: TreeEventAdd;
-      case remove: TreeEventRemove;
-      case append: TreeEventAppend;
-  };
-} TreeEvent;
-
 struct {
   uint16 num_events;
   uint16 checkpointed_idxs<0..31>,
   TreeEvent events<1..2^24-1>;
 } TreeEvents;
 ```
-
 
 # Witness API
 
