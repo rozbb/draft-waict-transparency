@@ -271,62 +271,19 @@ struct {
 } TreeEvents;
 ```
 
-# Witness API
+### Upload cosignature
 
-A witness is a stateful signer. It maintains a full copy of the prefix tree that it is witnessing the evolution of. When a witness receives a signature request from a transparency service, it checks that the tree evolved faithfully, then signs the root. This is its only API endpoint.
-
-(TODO: rethink this API. Since witnesses get tree events via a pull model, they should probably be sending their cosignatures via push)
-
-## Request signature
-
-* Endpoint: `/request-sig`
+* Endpoint: `/upload-cosignature/<N>`
 * Method: POST
-* Body: `application/octet-stream` containing a serialized `SigReq`, defined below
+* Body: An `application/octet-stream` containing signature(s) on the tree corresponding to checkpoint index `<N>`
 
-The body of a signature request contains two components:
-
-1. A list of every new prefix tree entry (included deleted ones)
-1. The root as a signed note, with variant `0x04` signatures (timestamped ed25519), signed with the calling transparency service's public key. The signed note text is of the form described above.
-
-Concretely, the body is a `SigReq` structure, defined as:
+The body MUST be a sequence of one or more Signed Note signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signature type must be `0x04` (timestamped ed25519). The signed note text is
 ```
-struct EntryDelete;
-
-enum {
-    ActiveEntry entry_update;
-    EntryDelete entry_delete;
-} EntryOp;
-
-struct {
-    uint8 key[32];
-    EntryOp op;
-} NewEntry;
-
-struct {
-    NewEntry new_entries<1..2^16-1>;
-    uint8 note<1..2^24-1>,
-} SigReq;
+<tdomain>/waict-v1/prefix-tree
+<N>
+<root>
 ```
-
-To validate a `SigReq`, the witness:
-
-1. Checks that `new_entries` has no duplicates`
-1. Loads the last known prefix tree state belonging to the transparency service
-1. Updates all entries. For each element of `new_entries`, the witness:
-    1. If it is not an `EntryDelete`,
-        1. Ensures `chain_size` increases by 1 (TODO: should we permit proofs where a site adds more than one entry?)
-        1. Ensures `time_created` is unchanged
-        1. Computes the new chain hash of the entry using its stored old chain hash and the given entry's `resource_hash`.
-    1. If it is an `EntryDelete`, sets the entry to a `TombstoneEntry` with the current epoch as `time_created`.
-1. Computes the new prefix tree root using the given entries and computed chain hashes
-1. Verifies the transparency service's signature on the updated prefix root, aborting on failure
-1. Adds its own cosignature to the signed note. Again, this is timestamped ed25519
-1. Updates its copy of the prefix tree
-1. Returns the new signed note
-
-Note: if a transparency service becomes unable to produce new proofs, it will be impossible for it to get new signatures. So in the case of data loss or intentional tampering, a transparency service is forced to negotiate with witnesses to have them accept a new tree.
-
-(TODO: any other endpoint a witness should provide? registration should probably be with a human in the loop)
+where `<tdomain>` is the domain of the transparency service, `<N>` is encoded in decimal, `<root>` is the base64-encoded root of the transparency service's prefix tree corresponding to checkpoint index `<N>`, and the last line ends with a newline (U+000A).
 
 # Asset Host API
 
