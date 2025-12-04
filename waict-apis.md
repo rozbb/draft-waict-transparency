@@ -74,7 +74,7 @@ struct {
 } EntryWithCtx;
 ```
 
-As sites interact with the transparency service, the prefix tree changes. These changes are encoded as a growing sequence of `TreeEvent` structs, defined below. The index of the tree event in the full sequence (0-indexed) is called the event's _epoch_.
+As sites interact with the transparency service, the prefix tree changes. These changes are encoded as a growing sequence of `TreeEvent` structs, defined below.
 
 ```
 struct {
@@ -108,7 +108,7 @@ struct {
 } TreeEvent;
 ```
 
-Finally, the tree event sequence has a subsequence called _checkpoint indices_. Each checkpoint index correspond to a tree state that is cosigned by witnesses. Specifically, a checkpoint index `i` corresponds to the prefix tree resulting from processing the tree events with epochs `[0, i)` in order.
+Tree events are exposed to witnesses in _batches_. Every time a witness processes a new batch of events, it signs the resulting tree root and sends it to the transparency service.
 
 (TODO: should events be strongly ordered? That is, should events have their epoch included inside, and should that epoch be included in some hash computations? This would make it so that any two people who agree on a prefix tree root necessarily agree on a tree event sequence. On the other hand, it is weird to hash in unrelated information for tree hashes.)
 
@@ -252,30 +252,38 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 
 This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
-### Get Tree Events
+### Get Batched Tree Events
 
-* Endpoint: `/tree-events/<N>`
+* Endpoint: `/tree-event-batch/<N>`
 * Method: GET
-* Returns: An `application/octet-stream` containing `TreeEvents`. The contained events have epoch in the range `[N, N+1000)`, and appear in ascending order of epoch. The contained checkpoint indices, if any, are in the range `(N, N+1000]`.
+* Returns: An `application/octet-stream` containing the `N`-th (0-indexed) chronological `TreeEventBatch`.
 
-`<N>` is formatted as above. Once an event or checkpoint index has been included in a response for `/tree-events/<N>`, it MUST be included in all future responses for the same endpoint, and the event MUST occur in the same position. As a corrolary, once a response has reached 1000 events, its `events` field is immutable. To help with long-term caching, we say that the first response for `/tree-events/<N>` that contains 1000 events is the response that the endpoint MUST serve forever. This means that checkpoint indices in the specified range MUST NOT change after the 1000th event has been served.
+`<N>` is formatted as above.
 
-Since this endpoint produces large responses, a transparency service MAY require additional GET parameters or headers for authorization purposes. Similarly, to help a witness avoid downloading data they already have, a transparency service SHOULD serve an [ETag header](https://www.rfc-editor.org/rfc/rfc7232#section-2.3) in responses at these endpoints, and respect `If-None-Match` headers in requests by responding with 304 on an ETag match.
+As the transparency service's event sequence grows, the service will periodically select a tail (starting at the first unpublished event), and package it into a batch. Before publishing the batch, the transparency service MAY arbitrarily transform it, so long as it does not affect the resulting tree. More precisely, for a given sequence of batches `batch_0, ..., batch_k`, and a new batch `b`, the transparency service MAY publish any batch `b'` so long as the following trees are equal:
+1. The tree resulting from processing `batch_0, ..., batch_k, b`, in order
+1. The tree resulting from processing `batch_0, ..., batch_k, b'`, in order
 
-The definition of `TreeEvents` is below:
+Endpoints under `/tree-event-batch` are immutable. That is, once a 2xx response code has been returned for a particular `N`, all future response bodies at that endpoint MUST be the same as the first's.
+
+Since this endpoint can produce large responses, a transparency service MAY require additional GET parameters or headers for authorization purposes.
+
+The definition of `TreeEventBatch` is below:
 ```
 struct {
   uint16 num_events;
-  uint16 checkpointed_idxs<0..31>,
   TreeEvent events<1..2^24-1>;
-} TreeEvents;
+} TreeEventBatch;
 ```
+In any returned `TreeEventBatch`, the `num_events` field MUST be set to the number of events included in the batch.
 
 ### Upload cosignature
 
 * Endpoint: `/upload-cosignature/<N>`
 * Method: POST
-* Body: An `application/octet-stream` containing signature(s) on the tree corresponding to checkpoint index `<N>`
+* Body: An `application/octet-stream` containing signature(s) on the tree resulting from processing all batches in the range `[0, N)`, in order.
+
+(TODO: make sure there's a notion of the root of the empty tree, so witnesses can sign that)
 
 The body MUST be a sequence of one or more Signed Note signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signature type must be `0x04` (timestamped ed25519). The signed note text is
 ```
@@ -283,7 +291,7 @@ The body MUST be a sequence of one or more Signed Note signature lines, each sta
 <N>
 <root>
 ```
-where `<tdomain>` is the domain of the transparency service, `<N>` is encoded in decimal, `<root>` is the base64-encoded root of the transparency service's prefix tree corresponding to checkpoint index `<N>`, and the last line ends with a newline (U+000A).
+where `<tdomain>` is the domain of the transparency service, `<N>` is encoded in decimal, `<root>` is the base64-encoded root of the transparency service's prefix tree after processing batches `[0, N)` in order, and the last line ends with a newline (U+000A).
 
 # Asset Host API
 
