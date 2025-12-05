@@ -49,9 +49,9 @@ The Transparency Service maintains a mapping of domains to resource hashes and a
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
 struct {
-    uint64 time_created;
+    uint64 last_modified;
     uint8 resource_hash[32];
-    uint64 chain_size; (TODO: think whether this is necessary)
+    uint64 chain_size; /* (TODO: think whether this is necessary) */
     uint8 asset_hosts_hash[32];
 } Entry;
 
@@ -142,7 +142,7 @@ After the transparency service makes the GET request, it updates the entry if it
 1. Creates a leaf with key `domain` if none exists
 1. Computes the hash `ah` of the given asset hosts
 1. Checks that `resource_hash` is valid base64, and is 32 bytes once decoded and checks that all the elements of `asset_hosts` are valid base64.
-1. Creates an `Entry`, `e`, with `time_created` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `chain_size` set to one plus the previous chain size or 0 if no previous entry exists, and `asset_hosts_hash` set to `ah`
+1. Creates an `Entry`, `e`, with `last_modified` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `chain_size` set to one plus the previous chain size or 0 if no previous entry exists, and `asset_hosts_hash` set to `ah`
 1. Comptues the hash `eh` of the entry `e`, and the chain hash `ch` of `e` (with the previous chain hash set to default if no previous entry exists).
 1. Sets the value of the leaf equal to an `EntryWithCtx`, with `entry` set to `e`, and `chain_hash` set to `ch`.
 1. Computes a new prefix root given the new leaf
@@ -163,8 +163,6 @@ Note that, if the given `resource_hash` is all zeros, this is equivalent to unen
 So as to not trigger spurious connection connection failures due to timeout, this endpoint SHOULD respond within one minute of receiving a request.
 
 (TODO: this doesn't give the site an easy way to interface with the transparency service going forward. If the site wants to call `/append`, what authentication mechanism does it use? How do we ensure it is the same person that registered the site? One thought is to make this process challenge-response like ACME. That is, have `$tdomain/begin-enroll` responds with two values, `chal` and `api-key`. The site puts `chal` in its `/.well-known`, and it saves the `api-key`. Then when `$tdomain/end-enroll?domain=<domain>` is called, it will validate `chal` and thus enable `api-key`. Another idea is to keep the 1-shot enrollment and just have the `/.well-known` file contain a pubkey. But pulling in a whole new sig standard for this seems like overkill)
-
-Note: In all endpoints, it is intentional that `time_created` never changes for as long as that entry exists. The only time it changes is on deletion of that leaf.
 
 ### Append to resource chain
 
@@ -187,7 +185,8 @@ The transparency service appends the given value hash to the corresponding entry
 1. Computes the new resource hash `rh'` from `value`
 1. Updates the entry's `resource_hash` to `rh'`
 1. Increments the entry's `chain_size`
-1. Updates the entry's `chain_hash` by computing the new chain hash with respect to the new entry
+1. Sets `last_modified` set to the current Unix time in seconds `t`
+1. Updates `chain_hash` by computing the new chain hash with respect to the new entry
 1. Appends a `TreeEvent` struct to its sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `unchanged`, `new_resource_hash` set to `rh'`, and `timestamp` set to `t`.
 1. Computes a new prefix root given the new leaf
 1. Computes an inclusion proof of the leaf in the new prefix tree
