@@ -74,43 +74,33 @@ struct {
 } EntryWithCtx;
 ```
 
-As sites interact with the transparency service, the prefix tree changes. These changes are encoded as a growing sequence of `TreeEvent` structs, defined below.
-
+As sites interact with the transparency service, the prefix tree changes. All adds, updates, and removals are encoded in a growing sequence of `TreeEvent` structs, defined below.
 ```
 struct {
   opaque url<1..511>;
 } AssetHost;
 
+/* In an add/update event, the asset hosts can either be changed or unchanged */
+enum { changed(0), unchanged(1) } NewAssetHostsTag;
 struct {
-  opaque domain<1..255>;
-  AssetHost asset_hosts<1..2^13-1>;
-  uint64 timestamp;
-} TreeEventAdd;
-
-struct {
-  opaque domain<1..255>;
-  uint64 timestamp;
-} TreeEventRemove;
-
-struct {
-  opaque domain<1..255>;
-  opaque new_resource_hash[32];
-} TreeEventUpdate;
-
-enum { add(0), remove(1), update(3) } TreeEventTag;
-struct {
-  TreeEventTag type;
+  NewAssetHostsTag type;
   select (TreeEvent.type) {
-      case add: TreeEventAdd;
-      case remove: TreeEventRemove;
-      case update: TreeEventUpdate;
+      case changed: AssetHost<1..2^13-1>;
+      case unchanged: opaque[0]; /* empty */
   };
+} NewAssetHosts;
+
+struct {
+  opaque domain<1..255>;
+  NewAssetHosts asset_hosts<1..2^13-1>;
+  opaque new_resource_hash[32];
+  uint64 timestamp;
 } TreeEvent;
 ```
 
-Tree events are exposed to witnesses in _batches_. Every time a witness processes a new batch of events, it signs the resulting tree root and sends it to the transparency service.
+(TODO: write an algorithm for how to process a list of events. Eg you MUST reject an event for a previously undefined domain that uses `NewAssetHostTag::unchanged`)
 
-(TODO: should events be strongly ordered? That is, should events have their epoch included inside, and should that epoch be included in some hash computations? This would make it so that any two people who agree on a prefix tree root necessarily agree on a tree event sequence. On the other hand, it is weird to hash in unrelated information for tree hashes.)
+Tree events are exposed to witnesses in _batches_. Every time a witness processes a new batch of events, it signs the resulting tree root and sends it to the transparency service.
 
 ## Hash Computations
 
@@ -141,6 +131,11 @@ The enrolling site will return a response containing all the information the tra
   "title": "Enrollment Data",
   "type": "object",
   "properties": {
+    "resource_hash": {
+      "type": "string",
+      "maxLength": 45,
+      "$comment": "Current resource hash, encoded in base64"
+    },
     "asset_hosts": {
       "type": "string",
       "maxLength": 8096,
@@ -154,19 +149,20 @@ The enrolling site will return a response containing all the information the tra
 If the site intends to unenroll, the site responds with the special value:
 ```json
 {
+  "resource_hash": "",
   "asset_hosts": [],
 }
 ```
-(TODO: There is an argument that empty asset hosts should be allowed. Eg if you want to sign up for website change monitoring without auditability.)
 
-After the transparency service makes the GET request, if it does not already have the domain, it:
+After the transparency service makes the GET request, if it does not already have the domain, and the JSON is not the special unenroll signal, it:
 
 1. Creates a leaf with key `domain`
 1. Computes the hash `ah` of the given asset hosts
+1. Checks that `resource_hash` is valid base64, and is 32 bytes once decoded and checks that all the elements of `asset_hosts` are valid base64.
 1. Sets the value of the leaf equal to an `EntryWithCtx`, with `chain_hash` set to default, `chain_size` set to 0, `asset_hosts_hash` set to `ah`, and `time_created` set to the current Unix time in seconds `t`.
 1. Computes a new prefix root given the new leaf
 1. Computes an inclusion proof of the leaf in the new prefix tree
-1. Appends a `TreeEventAdd` struct to the the sequence of tree events, with `domain` set to the given domain, and `asset_hosts` set to the given asset hosts, and `timestamp` set to `t`.
+1. Appends a `TreeEvent` struct to the the sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `changed` and containing the given asset hosts, `new_resource_hash` set to the decoded given resource hash, and `timestamp` set to `t`.
 1. Returns an `EntryWithProof`, defined as follows:
 ```
 struct {
@@ -182,37 +178,55 @@ where `WaictInclusionProof` is from the [WAICT proofs spec](./waict-proofs.md).
 
 If the domain already exists in the transparency service's prefix tree, then the service checks if the object is the special unenrollment form and, if so:
 1. Replaces the site's leaf with a `TombstoneEntry` with the current time `t`
-1. Appends a `TreeEventRemove` struct to the sequence of events, with `domain` set to the given domain and `timestamp` set to `t`
+1. Appends a `TreeEvent` struct to the the sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `unchanged`, `new_resource_hash` set to all zeros, and `timestamp` set to `t`.
 If the object is not the special unenrollment form, then the transparency service updates the leaf's `asset_host` field with the provided one.
 
 Note: In all endpoints, it is intentional that `time_created` never changes for as long as that entry exists. The only time it changes is on deletion of that leaf.
 
-### Append to chain
+### Append to resource chain
 
-* Endpoint: `/append`
+* Endpoint: `/append/<domain>`
 * Method: POST
 * Body: `application/octet-stream` containing a serialized `AppendReq`, defined below
 * Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
 * Authentication: Defined by the transparency service, e.g. a JWT. The transparency service MAY apply further policies or rate limits, e.g. requiring payment per resource logged.
 
-The append endpoint takes a domain and a resource value to append to that domain's chain:
+The endpoint takes a resource value to hash and append to `domain`'s resource chain:
 ```
 struct {
-  uint8 domain<1..2^8-1>;
-  uint8 value<1..2^24-1>;
+  opaque value<1..2^24-1>;
 } AppendReq;
 ```
 
-The transparency service appends the given value hash to the corresponding entry. That is, the transparency service
+The transparency service appends the given value hash to the corresponding entry. That is, the transparency service:
 
 1. Fetches the current `EntryWithCtx` with key `domain`, erroring if no entry exists or if the entry is a `TombstoneEntry`
 1. Computes the new resource hash `rh'` from `value`
 1. Updates the entry's `resource_hash` to `rh'`
 1. Increments the entry's `chain_size`
 1. Updates the entry's `chain_hash` by computing the new chain hash with respect to the new resource hash
-1. Appends a `TreeEventUpdate` struct to the the sequence of tree events, with `domain` set to the given domain, and `new_resource_hash` set to `rh'`.
+1. Appends a `TreeEvent` struct to its sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `unchanged`, `new_resource_hash` set to `rh'`, and `timestamp` set to `t`.
 
 (TODO: this should maybe support arbitrary fast-forward, not just single item appends; note this has to be within reason bc of the linear proof size)
+
+(TODO: there should be an endpoint to update asset hosts)
+
+(TODO: should this endpoint accept hashes instead of preimages? Hashes are more efficient, but storing arbitrary user-input data is not great)
+
+### Update asset hosts
+
+* Endpoint: `/update-asset-hosts/<domain>`
+* Method: POST
+* Body: `application/octet-stream` containing a serialized `AssetHosts`, defined below
+* Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
+* Authentication: Defined by the transparency service, as above.
+
+The endpoint takes a list of asset hosts to associate with `domain`:
+```
+struct {
+  AssetHost asset_hosts<1..2^13-1>;
+} AssetHosts;
+```
 
 ### Get Leaf
 
