@@ -16,7 +16,7 @@ Clients SHOULD signal that they support WAICT to the server through the use of u
 
 To signal WAICT support, the [user agent client hint](https://wicg.github.io/ua-client-hints/) `Sec-CH-WAICT` is used whose value is a `sf-list` of `sf-integers`. Each integer represents a supported version of WAICT. This specification defines version `1`. If clients include a `Sec-CH-WAICT` header in their requests, the included version numbers MUST be supported by the client.
 
-Servers supporting WAICT SHOULD actively solicit client hints for WAICT by including `Sec-CH-WAICT` in their `Accept-CH` response header (See [Section 3.1 of RFC 8942](https://www.rfc-editor.org/rfc/rfc8942#section-3.1)). Servers MUST tolerate unknown integers in the `Sec-CH-WAICT` header.
+Servers supporting WAICT SHOULD actively solicit client hints for WAICT by including `Sec-CH-WAICT` in their `Accept-CH` response header (See [Section 3.1 of RFC 8942](https://www.rfc-editor.org/rfc/rfc8942#section-3.1)). Servers MUST tolerate unknown integers in the `Sec-CH-WAICT` request header.
 
 For example, a client that supports versions 1 and 2 of WAICT might send:
 
@@ -34,7 +34,7 @@ This takes the form of a structured response header named `Sec-WAICT-v1-Enforce`
 * `preload` an `sf-boolean`.
 * `mode` an `sf-token` containing either `audit` or `enforce`.
 
-Any other keys MUST be ignored. If one or more of these keys is missing or invalid, the entire header MUST be ignored. Servers MAY set additional keys prefixed `GREASE` which clients MUST ignore.
+Any other keys MUST be ignored. If one or more of these keys is missing or invalid, the entire header MUST be ignored. Servers MAY set additional keys prefixed `GREASE-` which clients MUST ignore.
 
 ## Semantics
 
@@ -50,18 +50,26 @@ For example, a site that wishes to enable enforcement with preloading and a `max
 
 ## Client Behavior
 
-Upon parsing a valid WAICT enforcement header, the client SHOULD store the WAICT `mode` for this origin for at most `max-age` seconds. This value only needs to be stored for this top-level origin; it SHOULD NOT be exposed to requests from different top-level sites.
+When an origin is using WAICT, all requests made with a matching [top-level navigation initiator origin](https://fetch.spec.whatwg.org/#ref-for-request-top-level-navigation-initiator-origin) will be impacted by the WAICT security policy.
 
-If the client uses partitioned storage by origin and this header is set on a third-party domain, the client SHOULD NOT store it. WAICT is only effective in a first-party context.
 
-There may be situations in which clients are unable to store this record. For example, clients may not have access to long-term state (e.g. they are running in a private browsing mode). Such clients SHOULD store the record for as long as they are able.
+When processing a response to same-origin request (that is the request's origin matches its top-level navigation initiator origin) clients MUST check for valid WAICT enforcement response headers and SHOULD store the WAICT `mode` for this origin for at most `max-age` seconds from the present.
+
+However, WAICT does not impact requests made to a WAICT-enforcing domain in other top-level contexts if those top level-contexts do not advertise WAICT themselves. Clients MUST ignore WAICT headers set on responses whose origin does not match their current top-level navigation initiator origin. An example:
+
+* `foo.com` and `bar.com` both embed resources located on each others domains
+* `foo.com` uses WAICT and sets an enforcement header. `bar.com` does not use WAICT.
+* Clients which navigate to pages on `foo.com` will enforce WAICT on sub-resource requests, including those for `bar.com`.
+* Clients which navigate to `bar.com` will not enforce WAICT, even when loading sub-resources from `foo.com`.
+
+There may be situations in which clients are unable to store the WAICT enforcement mode. For example, clients may not have access to long-term state (e.g. they are running in a private browsing mode). Such clients SHOULD store the record for as long as they are able.
 
 A client encountering a WAICT enforcement header for an origin for the first time MUST treat all previously cached responses for that origin as stale.
 
 If the client had a previously stored WAICT record for an origin, it will overwrite it with the new configuration if:
 
-* The new record is mode 'enforce' and the previous record was mode 'audit', or
-* The new record and old record indicate the same mode and the effective `max-age` is further in the future.
+* The new record is mode `enforce` and the previous record was mode `audit`, or
+* The new record and old record indicate the same mode and the new record's expiry time (`max-age` seconds from the present) is further in the future.
 
 When a client has a stored and unexpired WAICT record for an origin, the client MUST check that each response is valid according to the provided WAICT manifest and transparency proof (see [the proof specification](waict-proofs.md)). If a response is invalid then the client MUST follow the enforcement requirements laid out below.
 
