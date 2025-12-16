@@ -16,25 +16,26 @@ We use the Signed Note data structure from the [C2SP signed note standard](https
 
 # Inclusion Proofs
 
-An entry
-
+An inclusion proof in a transparency service's tree is of the form:
 ```
 struct {
+  EntryWithCtx entry;
   PrefixProof inc_proof;
   uint8 signed_prefix_root<1..2^24-1>;
 } WaictInclusionProof;
 ```
-where `signed_prefix_root` is a signed note whose text is
-```
-$tdomain/waict-v1/prefix-tree
-<base64_root>
-```
+where `signed_prefix_root` is a Signed Note as described in `/upload-cosignature` endpoint in [`waict-apis.md`].
 
-To verify a `WaictInclusionProof` with respect to a leaf key and value, the verifier:
+To verify a `WaictInclusionProof` with respect to a leaf key, the verifier:
 
 1. Parses `signed_prefix_root` and extracts the root hash.
-1. Verifies `inc_proof` with respect to the given leaf key and value, and the parsed prefix root.
+1. Verifies `entry.entry.resource_hash` equals the expected resource hash.
+1. Verifies `inc_proof` with respect to `entry` (serialized), the given leaf key, and the parsed prefix root.
 1. Checks that the domain in the first line in `signed_prefix_root` (everything before the first `/`) matches the domain of a transparency service. The client MAY choose the set of transparency services that it trusts for this verification step.
 1. Verifies the cosignatures on `signed_prefix_root`. The client MAY choose the set of public keys that it trusts for this verification step.
 
-When the resource is a manifest and the verifier is a web browser, the leaf key is the current site's domain and the value is the `EntryWithCtx`. The client also MUST verify that the resource hash of the provided manifest matches the `resource_hash` of the given entry.
+# Presenting inclusion proofs
+
+We must define a way for the client to get the proof that that a manifest appears in the transparency log.
+
+Suppose a server is enrolled in transparency and serves a manifest with identifier `X` as a source in `Integrity-Policy` or `Integrity-Policy-Report-Only`. The server MUST expose an HTTP GET endpoint `/.well-known/waict/v1/inclusion/<X>`  (recall, identifiers are a nonempty sequence of URL-unreserved characters) that returns an `application/octet-stream` containing a `WaictInclusionProof` for the manifest.
