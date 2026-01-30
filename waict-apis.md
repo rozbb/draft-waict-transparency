@@ -49,9 +49,9 @@ The Transparency Service maintains a mapping of domains to resource hashes and a
 Concretely, the Transparency Service operator maintains a prefix tree where the keys are domains and values are `EntryWithCtx`, defined as follows:
 ```
 struct {
-    uint64 last_modified;
+    uint64 position_in_chain;
+    uint64 time_created;
     uint8 resource_hash[32];
-    uint64 chain_size; /* (TODO: think whether this is necessary) */
     uint8 asset_hosts_hash[32];
 } Entry;
 
@@ -141,7 +141,7 @@ After the transparency service makes the GET request, it updates the entry if it
 1. Creates a leaf with key `domain` if none exists
 1. Computes the hash `ah` of the given asset hosts
 1. Checks that `resource_hash` is valid base64, and is 32 bytes once decoded and checks that all the elements of `asset_hosts` are valid base64.
-1. Creates an `Entry`, `e`, with `last_modified` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `chain_size` set to one plus the previous chain size or 0 if no previous entry exists, and `asset_hosts_hash` set to `ah`
+1. Creates an `Entry`, `e`, with `time_created` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `position_in_chain` set to one plus the previous chain size or 0 if no previous entry exists, and `asset_hosts_hash` set to `ah`
 1. Comptues the hash `eh` of the entry `e`, and the chain hash `ch` of `e` (with the previous chain hash set to default if no previous entry exists).
 1. Sets the value of the leaf equal to an `EntryWithCtx`, with `entry` set to `e`, and `chain_hash` set to `ch`.
 1. Computes a new prefix root given the new leaf
@@ -183,8 +183,8 @@ The transparency service appends the given value hash to the corresponding entry
 1. Fetches the current `EntryWithCtx` with key `domain`, erroring if no entry exists
 1. Computes the new resource hash `rh'` from `value`
 1. Updates the entry's `resource_hash` to `rh'`
-1. Increments the entry's `chain_size`
-1. Sets `last_modified` set to the current Unix time in seconds `t`
+1. Increments the entry's `position_in_chain`
+1. Sets `time_created` set to the current Unix time in seconds `t`
 1. Updates `chain_hash` by computing the new chain hash with respect to the new entry
 1. Appends a `TreeEvent` struct to its sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `unchanged`, `new_resource_hash` set to `rh'`, and `timestamp` set to `t`.
 1. Computes a new prefix root given the new leaf
@@ -225,9 +225,9 @@ struct {
 
 ### Get Resource Hash Tile
 
-* Endpoint: `/resource-hash-tile/<N>[.p/<W>]`
+* Endpoint: `/resource-hash-tile/<domain>/<N>[.p/<W>]`
 * Method: GET
-* Response: An `application/octet-stream` containing up to 256 resource hashes
+* Response: An `application/octet-stream` containing up to 256 resource hashes belonging to the given domain, consecutive by the corresponding entries' `position_in_chain`, starting at `position_in_chain == N * 256`
 
 `<N>` is the index of the _tile_ where each tile is 256 consecutive resource hashes in the history of the site. `N` MUST be a non-negative integer encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`.
 
@@ -235,15 +235,15 @@ The `.p/<W>` suffix is only present for partial tiles, defined below. <W> is the
 
 The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
-A transparency service MAY prune sites for inactivity. That is, it MAY unenroll them after a year of no updates.
+A transparency service MAY unenroll a site after a year of no successful `/append` calls.
 
 ### Get Chain Hash
 
-* Endpoint: `/chain-hash/<N>`
+* Endpoint: `/chain-hash/<domain>/<N>`
 * Method: GET
-* Returns: An `application/octet-stream` containing the `N`-th chain hash (0-indexed).
+* Returns: An `application/octet-stream` containing the `N`-th chain hash (0-indexed) of the given domain.
 
-`<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled site for at least one year.
+`<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled domain for at least one year.
 
 ### Get Asset Hosts
 
@@ -251,7 +251,7 @@ A transparency service MAY prune sites for inactivity. That is, it MAY unenroll 
 * Method: GET
 * Returns: An `application/octet-stream` containing the comma-separated list of base64-encoded URLs corresponding to the `hash`.
 
-`<digest>` is an `asset_hosts_hash` inside some `EntryWithCtx` hosted by the transparency service. Every such value MUST be served at this endpoint.
+`<digest>` is a `asset_hosts_hash` (string-formatted same as all digests) inside some `EntryWithCtx` hosted by the transparency service. Every such value MUST be served at this endpoint.
 
 This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
