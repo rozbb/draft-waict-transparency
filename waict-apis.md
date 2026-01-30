@@ -21,15 +21,15 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 We use the TLS presentation syntax from [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html) to represent data structures and their canonical serialized format.
 
-We use `||` to denote concatenation of bytestrings. Unless otherwise specified, we use the placeholder text `<digest>` to refer to the zero-padded length-64 lowercase hex encoding of a SHA-256 digest prefixed by `sha256:`.
+We use the base64 encoding algorithms described in [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648.html). Specifically we use the standard "base64" encoding and the URL-safe "base64url" encoding.
+
+We use `||` to denote concatenation of bytestrings. Unless otherwise specified, we use the placeholder text `<digest>` to refer to a base64-encoded SHA-256 digest, prefixed by `sha256-`. This makes the digest a valid SRI [`hash-expression`](https://www.w3.org/TR/sri-2/#grammardef-hash-expression).
 
 We use the Prefix Tree data structure from the [key transparency draft specification](https://www.ietf.org/archive/id/draft-keytrans-mcmillion-protocol-02.html#name-prefix-tree). We also use the `PrefixProof` structure for proofs of inclusion and non-inclusion, as well as the structure's associated verification algorithm.
 
 We use the Signed Note data structure from the [C2SP signed note standard](https://github.com/C2SP/C2SP/blob/main/signed-note.md). We use the term "cosignature" as in the standard, to refer to a signature on a signed note.
 
 We use the JSON Schema langauge from the [JSON Schema standard](https://json-schema.org/draft/2020-12/json-schema-core) to specify the structure of JSON objects. We also use the associated [validation standard](https://json-schema.org/draft/2020-12/json-schema-validation#section-6.3) for additional keywords such as `maxLength` or `pattern`.
-
-We use the base64 encoding algorithms described in [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648.html). Specifically we use the standard "base64" encoding and the URL-safe "base64url" encoding.
 
 # Construction Overview
 
@@ -307,8 +307,6 @@ The asset host only need to be able to return a file given its hash.
 * Response: An `octet-stream` containing the resource whose SHA-256 hash is `<digest>`
 
 These endpoints are immutable, so asset hosts SHOULD have long caching times.
-
-(TODO: think about signalling hash function in this. use multihash? or just put `/sha256/` in the path?)
 
 # Client Behavior
 
