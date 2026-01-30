@@ -223,17 +223,17 @@ struct {
 * Method: GET
 * Return: An `application/octet-stream` containing a `WaictInclusionProof` for the given domain in the prefix tree
 
-### Get Resource Hash Tile
+### Get Entries Tile
 
-* Endpoint: `/resource-hash-tile/<domain>/<N>[.p/<W>]`
+* Endpoint: `/entries-tile/<domain>/<N>[.p/<W>]`
 * Method: GET
-* Response: An `application/octet-stream` containing up to 256 resource hashes belonging to the given domain, consecutive by the corresponding entries' `position_in_chain`, starting at `position_in_chain == N * 256`
+* Response: An `application/octet-stream` containing up to 256 `Entry`s belonging to the given domain, consecutive by `position_in_chain`, starting at `position_in_chain == N * 256`
 
 `<N>` is the index of the _tile_ where each tile is 256 consecutive resource hashes in the history of the site. `N` MUST be a non-negative integer encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`.
 
 The `.p/<W>` suffix is only present for partial tiles, defined below. <W> is the width of the tile, a decimal ASCII integer between 1 and 255, with no additional leading zeroes.
 
-The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
+The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile, by `time_created`. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
 A transparency service MAY unenroll a site after a year of no successful `/append` calls.
 
