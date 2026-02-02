@@ -221,7 +221,7 @@ struct {
 
 * Endpoint: `/leaf/<domain>`
 * Method: GET
-* Return: An `application/octet-stream` containing a `WaictInclusionProof` for the given domain in the prefix tree
+* Return: An `application/octet-stream` containing an `EntryWithProof` for the given domain in the prefix tree
 
 ### Get Entries Tile
 
@@ -229,9 +229,7 @@ struct {
 * Method: GET
 * Response: An `application/octet-stream` containing up to 256 `Entry`s belonging to the given domain, consecutive by `position_in_chain`, starting at `position_in_chain == N * 256`
 
-`<N>` is the index of the _tile_ where each tile is 256 consecutive resource hashes in the history of the site. `N` MUST be a non-negative integer encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`.
-
-The `.p/<W>` suffix is only present for partial tiles, defined below. <W> is the width of the tile, a decimal ASCII integer between 1 and 255, with no additional leading zeroes.
+`<N>` is the index of the _tile_ where each tile is 256 consecutive resource hashes in the history of the site. `N` MUST be an in teger in the range [0, 2²⁴), encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`. The `.p/<W>` suffix is only present for partial tiles, defined below. `<W>` is the width of the tile, a decimal ASCII integer in the range [1, 256), with no leading zeroes.
 
 The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile, by `time_created`. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
@@ -241,9 +239,11 @@ A transparency service MAY unenroll a site after a year of no successful `/appen
 
 * Endpoint: `/chain-hash/<domain>/<N>`
 * Method: GET
-* Returns: An `application/octet-stream` containing the `N`-th chain hash (0-indexed) of the given domain.
+* Returns: An `application/octet-stream` containing the chain hash that occurs after the `N`-th entry in the chain.
 
-`<N>` is formatted as above. The transparency service MUST store a chain hash of an enrolled domain for at least one year.
+`<N>` is formatted as above. `<N>` MUST be in the range [0, 2³²).
+
+The transparency service MUST store a chain hash of an enrolled domain for at least one year.
 
 ### Get Asset Hosts
 
@@ -251,7 +251,7 @@ A transparency service MAY unenroll a site after a year of no successful `/appen
 * Method: GET
 * Returns: An `application/octet-stream` containing the comma-separated list of base64-encoded URLs corresponding to the `hash`.
 
-`<digest>` is a `asset_hosts_hash` (string-formatted same as all digests) inside some `EntryWithCtx` hosted by the transparency service. Every such value MUST be served at this endpoint.
+`<digest>` is a `asset_hosts_hash` (string-formatted same as all digests) inside some `Entry` hosted by the transparency service. Every such value MUST be served at this endpoint.
 
 This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2SP/blob/main/static-ct-api.md#issuers) endpoint used in Static CT. Sites are not expected to change their asset hosts frequently, but must be free to do so as-needed.
 
@@ -261,7 +261,7 @@ This endpoint is similar in function to the [issuers](https://github.com/C2SP/C2
 * Method: GET
 * Returns: An `application/octet-stream` containing the `N`-th (0-indexed) chronological `TreeEventBatch`.
 
-`<N>` is formatted as above.
+`<N>` is formatted as above. `<N>` MUST be in the range [0, 2⁶⁴).
 
 As the transparency service's event sequence grows, the service will periodically select a tail (starting at the first unpublished event), and package it into a batch. Before publishing the batch, the transparency service MAY arbitrarily transform it, so long as it does not affect the resulting tree. More precisely, for a given sequence of batches `batch_0, ..., batch_k`, and a new batch `b`, the transparency service MAY publish any batch `b'` so long as the following trees are equal:
 1. The tree resulting from processing `batch_0, ..., batch_k, b`, in order
@@ -304,7 +304,7 @@ The asset host only need to be able to return a file given its hash.
 
 * Endpoint `/fetch/<digest>`
 * Method: GET
-* Response: An `octet-stream` containing the resource whose SHA-256 hash is `<digest>`
+* Response: An `octet-stream` containing the resource whose string-formatted SHA-256 hash is `<digest>`
 
 These endpoints are immutable, so asset hosts SHOULD have long caching times.
 
