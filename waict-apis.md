@@ -92,19 +92,81 @@ Tree events are exposed to witnesses in _batches_. Every time a witness processe
 
 ## Hash Computations
 
-The `chain_hash` field of an `EntryWithCtx` encodes the history of the entries associated with a given domain. This is how its hashes are computed:
+Entries contain hashes of arbitrary _resources_. The transparency never stores resources directly, only their hashes. The _resource hash_ of the resource `r` is defined to be `SHA-256("waict-rh" || r)`.
 
-1. A new resource `r` has resource hash `rh = SHA-256("waict-rh" || r)`
-1. A new entry `e` hash entry hash `eh = SHA-256("waict-eh" || e)`, where `e` is serialized in its TLS representation
-1. The chain hash `ch` is defined with respect to the new entry hash `eh` and the old chain hash `och` as `ch = SHA-256("waict-ch" || och || eh)`
+The `chain_hash` field of an `EntryWithCtx` encodes the history of the entries associated with a given domain excluding the `entry` field that it lies next to. Specifically, let `ec` be the domain's previous `EntryWithCtx`. Then the `chain_hash` field of a new `EntryWithCtx` is computed as `SHA-256("waict-ch" || ec)` (where `ec` is serialized in its TLS representation).
 
-The initial chain hash is 32 bytes of 0x00.
+The initial chain hash is 32 bytes of 0x00. So, for example, if `e` is the first entry for a domain, then the first `EntryWithCtx` will have the form `EntryWithCtx{entry: e, chain_hash: [0x00; 32]}`.
 
 The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs, with no trailing comma. `asset_hosts_hash = SHA-256("waict-ah" || entry1_b64 || "," || entry2_b64 || "," || ...)`.
 
 ## Transparency Service API
 
 We describe the HTTP API that the transparency service MUST expose.
+
+### Append to resource chain
+
+* Endpoint: `/append/<domain>`
+* Method: POST
+* Body: `application/json` containing a "New Entry Data" object, defined below
+* Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
+* Authentication: Defined by the transparency service, e.g. a JWT. The transparency service MAY apply further policies or rate limits, e.g. requiring payment per resource logged.
+
+The "New Entry Data" object provides the transparency service with the information it needs to create a new entry in the prefix tree. It has the following schema:
+```json
+{
+  "title": "New Entry Data",
+  "type": "object",
+  "properties": {
+    "resource_hash": {
+      "type": "string",
+      "maxLength": 45,
+      "$comment": "Current resource hash, encoded in base64"
+    },
+    "asset_hosts": {
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "maxLength": 512,
+        "type": "string"
+      },
+      "maxItems": 16,
+      "$comment": "URLs of this site's asset hosts"
+    }
+  },
+  "required": [ "asset_hosts", "resource_hash" ]
+}
+```
+The return value is an `application/octet-stream` containing an `EntryWithProof`, defined as follows:
+```
+struct {
+  EntryWithCtx entry;
+  WaictInclusionProof inc_proof;
+} EntryWithProof;
+```
+where `WaictInclusionProof` is from the [WAICT proofs spec](./waict-proofs.md).
+
+The transparency service creates an entry and appends it to the prefix tree. It requires that an entry for the given domain exists. If not, it returns an 400 error. The steps for appending are as follows. The transparency service:
+1. Computes the hash `ah` of the given asset hosts
+1. Checks that `resource_hash` is valid base64, and is 32 bytes once decoded and checks that all the elements of `asset_hosts` are valid URLs.
+1. Comptues the chain hash `ch` of the current `EntryWithCtx`
+1. Creates a new `Entry`, `e`, with `time_created` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `position_in_chain` set to one plus the previous entry's position in the chain, and `asset_hosts_hash` set to `ah`
+1. Sets the value of the leaf equal to an `EntryWithCtx`, with `entry` set to `e`, and `chain_hash` set to `ch`.
+1. Computes a new prefix root given the new leaf
+1. Appends a `TreeEvent` struct to the the sequence of tree events, with `domain` set to the given domain, `new_resource_hash` set to the decoded given resource hash, and `timestamp` set to `t`. If the provided asset hosts are different from the previous asset hosts, `asset_hosts` is set to have enum type `changed` and containing the given asset hosts. Otherwise, `asset_hosts` is set to have enum type `unchanged`.
+1. Waits for cosignatures on the new prefix root or a root that came after it
+1. Computes a `WaictInclusionProof` of the latest `EntryWithCtx` associated with `domain` in the newly cosigned prefix tree
+1. Returns an `EntryWithProof`, with `entry` set to that `EntryWithCtx` and `inc_proof` set to that inclusion proof.
+
+Note well: the `EntryWithCtx` that is returned in the inclusion proof MAY be different from the one that was appended to the prefix tree. This happens if the transparency service received multiple `/append` requests for the same domain within the time it takes to receive new cosignatures. In these cases, the returned `EntryWithCtx` is the one that was appended last.
+
+If the given `resource_hash` is the base64 encoding of `[0x00; 32]`, this is interpreted by the transparency service as unenrolling the site.
+
+So as to not trigger spurious connection connection failures due to timeout, this endpoint SHOULD respond within one minute of receiving a request.
+
+(TODO: this should maybe support arbitrary fast-forward, not just single item appends; note this has to be within reason bc of the linear proof size)
+
+(TODO: should this endpoint accept hashes instead of preimages? Hashes are more efficient, but storing arbitrary user-input data is not great)
 
 ### Enrollment via HTTPS
 
@@ -115,107 +177,21 @@ We describe the HTTP API that the transparency service MUST expose.
 
 Calling this endpoint causes the transparency service to make an HTTPS GET query to `https://<domain>/.well-known/waict-enroll` (TODO: register with IANA).
 
-The enrolling site will return a response containing all the information the transparency service needs to create a new `EntryWithCtx`. Concretely, the site responds with with MIME type `application/json` and the schema:
-```json
-{
-  "title": "Enrollment Data",
-  "type": "object",
-  "properties": {
-    "resource_hash": {
-      "type": "string",
-      "maxLength": 45,
-      "$comment": "Current resource hash, encoded in base64"
-    },
-    "asset_hosts": {
-      "type": "string",
-      "maxLength": 8096,
-      "$comment": "Comma-separated list of base64-encoded URLs corresponding to asset hosts"
-    }
-  },
-  "required": [ "asset_hosts" ]
-}
-```
+The enrolling site will return a response containing all the information the transparency service needs to create a new `EntryWithCtx`. Concretely, the site responds with a "New Entry Data" object, as defined above, with MIME type `application/json`.
 
-After the transparency service makes the GET request, it updates the entry if it exists, or creates a new one. Specifically, the transparency service:
+After the transparency service makes the GET request, it updates the entry if it exists, or creates a new one. Specifically:
+1. If an entry for the given domain does not exist, it:
+    1. Computes the hash `ah` of the given asset hosts
+    1. Creates a new `Entry`, `e`, with `time_created` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `position_in_chain` set to 0, and `asset_hosts_hash` set to `ah`
+    1. Creates a new `EntryWithCtx`, with `entry` set to `e`, and `chain_hash` set to the initial chain hash of `[0x00; 32]`.
+    1. Appends a `TreeEvent` struct to the the sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `changed` and containing the given asset hosts, `new_resource_hash` set to the decoded given resource hash, and `timestamp` set to `t`.
+1. Else, if an entry for the given domain does exist, it follows the steps of `/append/<domain>`.
 
-1. Creates a leaf with key `domain` if none exists
-1. Computes the hash `ah` of the given asset hosts
-1. Checks that `resource_hash` is valid base64, and is 32 bytes once decoded and checks that all the elements of `asset_hosts` are valid base64.
-1. Creates an `Entry`, `e`, with `time_created` set to the current Unix time in seconds `t`, `resource_hash` set to the decoded given resource hash, `position_in_chain` set to one plus the previous chain size or 0 if no previous entry exists, and `asset_hosts_hash` set to `ah`
-1. Comptues the hash `eh` of the entry `e`, and the chain hash `ch` of `e` (with the previous chain hash set to default if no previous entry exists).
-1. Sets the value of the leaf equal to an `EntryWithCtx`, with `entry` set to `e`, and `chain_hash` set to `ch`.
-1. Computes a new prefix root given the new leaf
-1. Computes an inclusion proof of the leaf in the new prefix tree
-1. Appends a `TreeEvent` struct to the the sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `changed` and containing the given asset hosts, `new_resource_hash` set to the decoded given resource hash, and `timestamp` set to `t`.
-1. Waits for cosignatures on the new root
-1. Returns an `EntryWithProof`, defined as follows:
-```
-struct {
-  EntryWithCtx entry;
-  WaictInclusionProof inc_proof;
-} EntryWithProof;
-```
-where `WaictInclusionProof` is from the [WAICT proofs spec](./waict-proofs.md).
+If the given `resource_hash` is the base64 encoding of `[0x00; 32]`, this is interpreted by the transparency service as unenrolling the site.
 
-Note that, if the given `resource_hash` is all zeros, this is equivalent to unenrolling the site.
+So as to not trigger spurious connection failures due to timeout, this endpoint SHOULD respond within one minute of receiving a request.
 
-So as to not trigger spurious connection connection failures due to timeout, this endpoint SHOULD respond within one minute of receiving a request.
-
-(TODO: this doesn't give the site an easy way to interface with the transparency service going forward. If the site wants to call `/append`, what authentication mechanism does it use? How do we ensure it is the same person that registered the site? One thought is to make this process challenge-response like ACME. That is, have `$tdomain/begin-enroll` responds with two values, `chal` and `api-key`. The site puts `chal` in its `/.well-known`, and it saves the `api-key`. Then when `$tdomain/end-enroll?domain=<domain>` is called, it will validate `chal` and thus enable `api-key`. Another idea is to keep the 1-shot enrollment and just have the `/.well-known` file contain a pubkey. But pulling in a whole new sig standard for this seems like overkill)
-
-### Append to resource chain
-
-* Endpoint: `/append/<domain>`
-* Method: POST
-* Body: `application/octet-stream` containing a serialized `AppendReq`, defined below
-* Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
-* Authentication: Defined by the transparency service, e.g. a JWT. The transparency service MAY apply further policies or rate limits, e.g. requiring payment per resource logged.
-
-The endpoint takes a resource value to hash and append to `domain`'s resource chain:
-```
-struct {
-  opaque value<1..2^24-1>;
-} AppendReq;
-```
-
-The transparency service appends the given value hash to the corresponding entry and returns a new inclusion proof. That is, the transparency service:
-
-1. Fetches the current `EntryWithCtx` with key `domain`, erroring if no entry exists
-1. Computes the new resource hash `rh'` from `value`
-1. Updates the entry's `resource_hash` to `rh'`
-1. Increments the entry's `position_in_chain`
-1. Sets `time_created` set to the current Unix time in seconds `t`
-1. Updates `chain_hash` by computing the new chain hash with respect to the new entry
-1. Appends a `TreeEvent` struct to its sequence of tree events, with `domain` set to the given domain, `asset_hosts` set to have enum type `unchanged`, `new_resource_hash` set to `rh'`, and `timestamp` set to `t`.
-1. Computes a new prefix root given the new leaf
-1. Computes an inclusion proof of the leaf in the new prefix tree
-1. Waits for cosignatures on the new root
-1. Returns an `EntryWithProof` for the new leaf
-
-Note that, if the given `resource_hash` is all zeros, this is equivalent to unenrolling the site.
-
-So as to not trigger spurious connection connection failures due to timeout, this endpoint SHOULD respond within one minute of receiving a request.
-
-(TODO: this should maybe support arbitrary fast-forward, not just single item appends; note this has to be within reason bc of the linear proof size)
-
-(TODO: should this endpoint accept hashes instead of preimages? Hashes are more efficient, but storing arbitrary user-input data is not great)
-
-### Update asset hosts
-
-* Endpoint: `/update-asset-hosts/<domain>`
-* Method: POST
-* Body: `application/octet-stream` containing a serialized `AssetHosts`, defined below
-* Return value: A `WaictInclusionProof` for the new entry in the new prefix tree
-* Authentication: Defined by the transparency service, as above.
-
-This endpoint behaves identically to `/append/<domain>`, except the resource hash for the new entry is kept the same, and the new asset hosts list is set to enum type `changed` with the provided asset hosts included.
-
-The endpoint takes a list of asset hosts to associate with `domain`:
-```
-struct {
-  AssetHost asset_hosts<1..2^13-1>;
-} AssetHosts;
-```
+(TODO: if a user enrolls for the firs time using an all-zeros resource hash, should this be interpreted as unenrolling? Kinda odd)
 
 ### Get Leaf
 
