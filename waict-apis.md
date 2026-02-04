@@ -98,7 +98,7 @@ The `chain_hash` field of an `EntryWithCtx` encodes the history of the entries a
 1. A new entry `e` hash entry hash `eh = SHA-256("waict-eh" || e)`, where `e` is serialized in its TLS representation
 1. The chain hash `ch` is defined with respect to the new entry hash `eh` and the old chain hash `och` as `ch = SHA-256("waict-ch" || och || eh)`
 
-The initial chain hash is the empty string `""`.
+The initial chain hash is 32 bytes of 0x00.
 
 The `asset_hosts_hash` encodes the asset hosts where resources can be fetched from. It's computed over the comma-separated list of base64-encoded URLs, with no trailing comma. `asset_hosts_hash = SHA-256("waict-ah" || entry1_b64 || "," || entry2_b64 || "," || ...)`.
 
@@ -227,9 +227,9 @@ struct {
 
 * Endpoint: `/entries-tile/<domain>/<N>[.p/<W>]`
 * Method: GET
-* Response: An `application/octet-stream` containing up to 256 `Entry`s belonging to the given domain, consecutive by `position_in_chain`, starting at `position_in_chain == N * 256`
+* Response: An `application/octet-stream` containing up to 256 concatenated `Entry`s belonging to the given domain, consecutive by `position_in_chain`, starting at `position_in_chain == N * 256`
 
-`<N>` is the index of the _tile_ where each tile is 256 consecutive resource hashes in the history of the site. `N` MUST be an in teger in the range [0, 2²⁴), encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`. The `.p/<W>` suffix is only present for partial tiles, defined below. `<W>` is the width of the tile, a decimal ASCII integer in the range [1, 256), with no leading zeroes.
+`<N>` is the index of the _tile_ where each tile is 256 consecutive entries in the history of the site. `N` MUST be an integer in the range [0, 2²⁴), encoded into 3-digit path elements. All but the last path element MUST begin with an x. For example, index 1234067 will be encoded as `x001/x234/067`. The `.p/<W>` suffix is only present for partial tiles, defined below. `<W>` is the width of the tile, a decimal ASCII integer in the range [1, 256), with no leading zeroes.
 
 The transparency service MUST store a tile of an enrolled site for at least one year beyond the youngest entry in the tile, by `time_created`. If the tile is partial, then the transparency service MUST NOT delete it until the site unenrolled.
 
