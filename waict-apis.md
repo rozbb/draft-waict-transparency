@@ -266,11 +266,20 @@ In any returned `TreeEventBatch`, the `num_events` field MUST be set to the numb
 
 The body MUST be a sequence of one or more Signed Note signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signature type must be `0x04` (timestamped ed25519). The signed note text is
 ```
-<tdomain>/waict-v1/prefix-tree
+waict-cosignature/v1
+time <time>
+<tdomain>/prefix-tree
 <N>
 <root>
 ```
-where `<tdomain>` is the domain of the transparency service, `<N>` is encoded in decimal, `<root>` is the base64-encoded root of the transparency service's prefix tree after processing batches `[0, N)` in order, and the last line ends with a newline (U+000A).
+where
+
+* `<time>` is the timestamp of the signature, in seconds since the epoch, encoded in ASCII decimal with no leading zeroes
+* `<tdomain>` is the domain of the transparency service
+* `<N>` is encoded in ASCII decimal with no leading zeroes
+* `<root>` is the base64-encoded root of the transparency service's prefix tree after processing batches `[0, N)` in order, and the last line ends with a newline (U+000A).
+
+Note `<time>` MUST match the timestamp encoded in the signature line.
 
 # Asset Host API
 
