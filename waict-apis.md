@@ -264,7 +264,15 @@ In any returned `TreeEventBatch`, the `num_events` field MUST be set to the numb
 
 (TODO: make sure there's a notion of the root of the empty tree, so witnesses can sign that)
 
-The body MUST be a sequence of one or more Signed Note signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signature type must be `0x04` (timestamped ed25519). The signed note text is
+The body MUST be a sequence of one or more Signed Note signature lines, each starting with the `—` character (U+2014) and ending with a newline character (U+000A). The signature type MUST be `0x06` (TODO: request this codepoint from C2SP). This signature type is identical to the [cosignature-v1 signature type](https://github.com/C2SP/C2SP/blob/main/tlog-cosignature.md) except for the signature text and signature type identifier.
+
+The key ID is computed as
+```
+SHA-256(<name> || "\n" || 0x06 || 32-byte Ed25519 cosigner public key)[:4]
+```
+where `<name>` is the key name from the signature line.
+
+The signed note text is
 ```
 waict-cosignature/v1
 time <time>
@@ -280,6 +288,15 @@ where
 * `<root>` is the base64-encoded root of the transparency service's prefix tree after processing batches `[0, N)` in order, and the last line ends with a newline (U+000A).
 
 Note `<time>` MUST match the timestamp encoded in the signature line.
+
+The signature MUST be of the form
+```
+struct {
+    u64 timestamp;
+    u8 signature[64];
+} TimestampedSignature;
+```
+where `timestamp` is the same as the timestamp in the signed note text.
 
 # Asset Host API
 
